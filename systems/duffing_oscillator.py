@@ -6,7 +6,7 @@ import torch
 import matplotlib.pyplot as plt
 from torchdiffeq import odeint
 
-# For reproducibility purposes, set the random seed
+# For reproducibility purposes
 torch.manual_seed(156)
 
 # Parameters of simulation
@@ -25,6 +25,10 @@ u0 = -1.0 + 2.0 * torch.rand((), dtype=torch.float64) # Initial input for static
 # Parameters of the thin plate, using Nrbf = 8, as in SiShiAta 2026
 Nrbf = 8 # Number of radial basis functions
 c = -1.0 + 2.0 * torch.rand((Nrbf, 2), dtype=torch.float64) # Centers of the radial basis functions, randomly chosen in [-1, 1]^2
+
+# Parameters of the training dataset
+N_trajectories = 20000 # Number of independent trajectories
+N_steps = 2 # Number of simulation steps per trajectory]
 
 # Duffing oscillator dynamics 
 def dynamics(t, x,u):
@@ -45,15 +49,6 @@ def simulate_step(x, u):
     )
     x_next = solution[-1]
     return x_next
-
-# Parameters of the training dataset
-N_trajectories = 20000 # Number of independent trajectories
-N_steps = 2 # Number of simulation steps per trajectory
-
-# Training dataset
-X = [] # Current states x(k)
-U = [] # Inputs u(k)
-X_next = [] # Next states x(k+1)
 
 # Generation of the training dataset
 for trajectory in range(N_trajectories):
@@ -84,21 +79,18 @@ def create_koopman_state(x, c, Nrbf):
     return z
 
 # Creation of the Koopman lifted states for the training dataset
-Z = [] # Koopman lifted states z(k)
+Z = [] 
 for i in range(X.shape[0]):
     z = create_koopman_state(X[i], c, Nrbf)
     Z.append(z)
-Z = torch.stack(Z) # Convert the list of Koopman lifted states into a tensor
-
-# Creation of the Koopman lifted next states for the training dataset
-Z_next = [] # Koopman lifted next states z(k+1)
+Z = torch.stack(Z) 
+Z_next = [] 
 for i in range(X_next.shape[0]):
     z_next = create_koopman_state(X_next[i], c, Nrbf)
     Z_next.append(z_next)
-Z_next = torch.stack(Z_next) # Convert the list of Koopman lifted next states into a tensor
+Z_next = torch.stack(Z_next) 
 
 # Build the Koopman operator using least squares regression
-# The Koopman model is identified such that z(k+1) ≈ A*z(k) + B*u(k)
 U = U.unsqueeze(1) # Reshape U to be a column vector
 Theta = torch.cat((Z, U), dim=1) # Concatenate Z and U to form the regression matrix
 
@@ -119,14 +111,12 @@ t_test = torch.arange(N_test + 1, dtype=torch.float64) * dt # Test time vector
 
 x0_test = torch.tensor([-0.6, 1.4], dtype=torch.float64) # Initial condition used for the test
 
-# Test input signal
 U_test = []
 for k in range(N_test):
     u = 0.8 * torch.sin(torch.tensor(0.2 * k, dtype=torch.float64)) # signal used in SiShiAta 2026
     U_test.append(u)
 U_test = torch.stack(U_test)
 
-# Initial states for the real and Koopman simulations
 x_real = x0_test.clone() # initiital state for real simulation
 z_koopman = create_koopman_state(x0_test, c, Nrbf) # initial lifted state for Koopman simulation
 
@@ -145,13 +135,12 @@ for k in range(N_test):
     X_real_test.append(x_real)
     Z_koopman_test.append(z_koopman)
 
-# Conversion of the test trajectories to tensors
 X_real_test = torch.stack(X_real_test)
 Z_koopman_test = torch.stack(Z_koopman_test)
 X_koopman_test = Z_koopman_test[:, :2]
 
 # Spectral analysis of the identified Koopman operator
-eigenvalues = torch.linalg.eigvals(A) # Eigenvalues of the Koopman state transition matrix
+eigenvalues = torch.linalg.eigvals(A) 
 rho_A = torch.max(torch.abs(eigenvalues)) # Spectral radius of A
 print("Spectral radius of A:", rho_A.item())
 
@@ -183,4 +172,3 @@ plt.legend()
 
 plt.tight_layout()
 plt.show()
-
