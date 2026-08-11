@@ -71,14 +71,7 @@ X = torch.stack(X)
 U = torch.stack(U)
 X_next = torch.stack(X_next)
 
-
-# Dataset information
-print("X shape:", X.shape)
-print("U shape:", U.shape)
-print("X_next shape:", X_next.shape)
-
 # Creation of the Koopman lifted state using thin plate radial basis functions
-
 def create_koopman_state(x, c, Nrbf):
     phi = [] # List of radial basis function values
     for i in range(Nrbf):
@@ -104,18 +97,10 @@ for i in range(X_next.shape[0]):
     Z_next.append(z_next)
 Z_next = torch.stack(Z_next) # Convert the list of Koopman lifted next states into a tensor
 
-# Lifted dataset information
-
-print("Z shape:", Z.shape)
-print("U shape:", U.shape)
-print("Z_next shape:", Z_next.shape)
-
 # Build the Koopman operator using least squares regression
 # The Koopman model is identified such that z(k+1) ≈ A*z(k) + B*u(k)
 U = U.unsqueeze(1) # Reshape U to be a column vector
 Theta = torch.cat((Z, U), dim=1) # Concatenate Z and U to form the regression matrix
-
-print("Theta shape:", Theta.shape)
 
 # Least squares solution for the Koopman operator K
 K = torch.linalg.lstsq(Theta, Z_next).solution # Solve for K in the least squares sense
@@ -165,6 +150,11 @@ X_real_test = torch.stack(X_real_test)
 Z_koopman_test = torch.stack(Z_koopman_test)
 X_koopman_test = Z_koopman_test[:, :2]
 
+# Spectral analysis of the identified Koopman operator
+eigenvalues = torch.linalg.eigvals(A) # Eigenvalues of the Koopman state transition matrix
+rho_A = torch.max(torch.abs(eigenvalues)) # Spectral radius of A
+print("Spectral radius of A:", rho_A.item())
+
 # Comparison between the real system and the Koopman model
 
 plt.figure(figsize=(12, 5))
@@ -193,3 +183,4 @@ plt.legend()
 
 plt.tight_layout()
 plt.show()
+
