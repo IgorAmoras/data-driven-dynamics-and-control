@@ -50,6 +50,11 @@ def simulate_step(x, u):
     x_next = solution[-1]
     return x_next
 
+
+X = [] # Current states x(k)
+U = [] # Inputs u(k)
+X_next = [] # Next states x(k+1)
+
 # Generation of the training dataset
 for trajectory in range(N_trajectories):
     x = -1.0 + 2.0 * torch.rand(2, dtype=torch.float64) # Random initial state in [-1, 1]
@@ -103,7 +108,6 @@ A = K[:Nz, :].T# Koopman operator for the lifted state
 B = K[Nz:, :].T # Koopman operator for the input
 
 # Test against real system using SiShiAta 2026 parameters
-
 # Parameters
 T_test = 10.0 # Total test simulation time
 N_test = int(T_test / dt) # Number of test simulation steps
