@@ -140,7 +140,6 @@ A_soft_variable = cp.Variable((Nz, Nz)) # TODO: investigate types in python, "sy
 B_soft_variable = cp.Variable((Nz, 1))
 
 gamma = cp.Variable()
-tau = cp.Variable()
 
 # Prediction error
 residual = Z_next_numpy - (
@@ -158,16 +157,14 @@ lmi = cp.bmat([
 
 # Soft stability constraints
 constraints = [
-    lmi >> 0,
-    tau >= gamma,
-    tau >= 0
+    lmi >> 0
 ]
 
 # Objective function
 objective = cp.Minimize(
     cp.sum_squares(residual)
     +
-    lambda_soft * cp.square(tau)
+    lambda_soft * cp.square(gamma)
 )
 
 # Optimization problem
