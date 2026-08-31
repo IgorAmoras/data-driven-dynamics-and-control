@@ -8,14 +8,24 @@
 #         Y = P A,  G = P B
 #      and the Schur-complement LMI
 #
-# The system, seed, RBF lifting, training data, and test trajectory intentionally
-# follow systems/duffing_oscillator.py so the results are directly comparable.
+# PERFORMANCE NOTE
+# ----------------
+# The original version sent all 40,000 sample residuals directly to CVXPY and
+# generated the training trajectories with 40,000 individual ODE solver calls.
+# That is unnecessary here. This version:
+#   - uses the same fixed-step RK4 rule in vectorized form;
+#   - vectorizes the RBF lifting;
+#   - compresses the least-squares objectives into Gram matrices before CVXPY.
+#
+# Therefore the SDP size depends essentially on the lifted-state dimension, not
+# on the number of training samples. No training samples are discarded.
 
-import numpy as np
+import time
+
 import cvxpy as cp
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
-from torchdiffeq import odeint
 
 
 # -----------------------------------------------------------------------------
@@ -25,17 +35,10 @@ from torchdiffeq import odeint
 torch.manual_seed(156)
 
 dt = 0.01
-T = 20.0
-N = int(T / dt)
-t = torch.linspace(0, T, N + 1, dtype=torch.float64)
-method = "rk4"
-options = {"step_size": dt}
-
 delta = 2.0
 
-# These two draws are kept even though they are not used below. They preserve
-# the same random-number sequence used in duffing_oscillator.py before the RBF
-# centers are generated.
+# Keep these draws to preserve the random-number sequence of the original
+# duffing_oscillator.py before the RBF centers are generated.
 x0 = -1.0 + 2.0 * torch.rand(2, dtype=torch.float64)
 u0 = -1.0 + 2.0 * torch.rand((), dtype=torch.float64)
 
@@ -51,26 +54,34 @@ P_MIN_EIG = 1e-3
 
 
 # -----------------------------------------------------------------------------
-# Duffing dynamics and simulation
+# Duffing dynamics and fast fixed-step RK4
 # -----------------------------------------------------------------------------
 
-def dynamics(t, x, u):
-    x1, x2 = x
+def dynamics(x, u):
+    """Duffing dynamics for either one state (..., 2) or a batch of states."""
+    x1 = x[..., 0]
+    x2 = x[..., 1]
+
     dx1 = x2
     dx2 = -delta * x2 - x1 * torch.cos(x1 + x2) + u
-    return torch.stack([dx1, dx2])
+
+    return torch.stack((dx1, dx2), dim=-1)
 
 
 def simulate_step(x, u):
-    t_step = torch.tensor([0.0, dt], dtype=torch.float64)
-    solution = odeint(
-        lambda current_t, current_x: dynamics(current_t, current_x, u),
-        x,
-        t_step,
-        method=method,
-        options=options,
-    )
-    return solution[-1]
+    """
+    One fixed RK4 step of length dt.
+
+    This is the same numerical integration rule used in the original script
+    with torchdiffeq's method='rk4' and step_size=dt, but without the overhead
+    of constructing an ODE solver for every single training sample.
+    """
+    k1 = dynamics(x, u)
+    k2 = dynamics(x + 0.5 * dt * k1, u)
+    k3 = dynamics(x + 0.5 * dt * k2, u)
+    k4 = dynamics(x + dt * k3, u)
+
+    return x + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
 
 # -----------------------------------------------------------------------------
@@ -78,20 +89,19 @@ def simulate_step(x, u):
 # -----------------------------------------------------------------------------
 
 def create_koopman_state(x, centers, n_rbf):
-    phi = []
-    for i in range(n_rbf):
-        r = torch.norm(x - centers[i])
-        phi_i = r**2 * torch.log(r + 1e-6)
-        phi.append(phi_i)
-
-    phi = torch.stack(phi)
+    """Lift a single state."""
+    diff = x.unsqueeze(0) - centers[:n_rbf]
+    r = torch.linalg.vector_norm(diff, dim=1)
+    phi = r**2 * torch.log(r + 1e-6)
     return torch.cat((x, phi))
 
 
 def lift_batch(X_batch):
-    return torch.stack(
-        [create_koopman_state(x, c, Nrbf) for x in X_batch]
-    )
+    """Vectorized thin-plate RBF lifting for all samples at once."""
+    diff = X_batch[:, None, :] - c[None, :, :]
+    r = torch.linalg.vector_norm(diff, dim=2)
+    phi = r**2 * torch.log(r + 1e-6)
+    return torch.cat((X_batch, phi), dim=1)
 
 
 # -----------------------------------------------------------------------------
@@ -99,31 +109,64 @@ def lift_batch(X_batch):
 # -----------------------------------------------------------------------------
 
 def generate_training_dataset():
-    X = []
-    U = []
-    X_next = []
+    """
+    Generate all Duffing trajectories in batch.
 
-    for _ in range(N_trajectories):
-        x = -1.0 + 2.0 * torch.rand(2, dtype=torch.float64)
+    A (N_trajectories, 2 + N_steps) random tensor is used so the flat random
+    draw order remains x1, x2, u0, u1 for each trajectory, matching the logical
+    order of the original nested loop.
+    """
+    random_draws = -1.0 + 2.0 * torch.rand(
+        (N_trajectories, 2 + N_steps),
+        dtype=torch.float64,
+    )
 
-        for _ in range(N_steps):
-            u = -1.0 + 2.0 * torch.rand((), dtype=torch.float64)
-            x_next = simulate_step(x, u)
+    x = random_draws[:, :2].clone()
+    u_schedule = random_draws[:, 2:]
 
-            X.append(x)
-            U.append(u)
-            X_next.append(x_next)
+    X = torch.empty(
+        (N_trajectories, N_steps, 2),
+        dtype=torch.float64,
+    )
+    U = torch.empty(
+        (N_trajectories, N_steps, 1),
+        dtype=torch.float64,
+    )
+    X_next = torch.empty_like(X)
 
-            x = x_next
+    for step in range(N_steps):
+        u = u_schedule[:, step]
+        x_next = simulate_step(x, u)
 
-    X = torch.stack(X)
-    U = torch.stack(U).unsqueeze(1)
-    X_next = torch.stack(X_next)
+        X[:, step, :] = x
+        U[:, step, 0] = u
+        X_next[:, step, :] = x_next
+
+        x = x_next
+
+    # Preserve the original ordering: trajectory 0 step 0, trajectory 0 step 1,
+    # trajectory 1 step 0, trajectory 1 step 1, ...
+    X = X.reshape(-1, 2)
+    U = U.reshape(-1, 1)
+    X_next = X_next.reshape(-1, 2)
 
     Z = lift_batch(X)
     Z_next = lift_batch(X_next)
 
     return X, U, X_next, Z, Z_next
+
+
+# -----------------------------------------------------------------------------
+# Small quadratic objectives from sufficient statistics
+# -----------------------------------------------------------------------------
+
+def gram_matrix(data):
+    """Return E[data^T data] and mark it PSD for CVXPY."""
+    n = data.shape[0]
+    gram = (data.T @ data) / n
+    # Numerical symmetrization avoids tiny floating-point asymmetries.
+    gram = 0.5 * (gram + gram.T)
+    return cp.psd_wrap(gram)
 
 
 # -----------------------------------------------------------------------------
@@ -145,26 +188,42 @@ def identify_koopman_p_identity(Z, U, Z_next):
     """
     Stable identification with the classical Lyapunov matrix fixed to P = I.
 
-    Discrete-time stability condition:
-        A^T A - I < 0
+    A^T A - I < 0
 
-    By the Schur complement this is equivalent to:
-        [ I   A^T ] > 0
+    is equivalent, by the Schur complement, to
+
+        [ I   A^T ] > 0.
         [ A    I  ]
 
-    This is convex directly in A and B.
+    The least-squares objective is written from Gram matrices, so CVXPY never
+    sees the 40,000-row residual matrix.
     """
     Z_np = Z.numpy()
     U_np = U.numpy()
     Z_next_np = Z_next.numpy()
 
+    n = Z_np.shape[0]
     nz = Z.shape[1]
     I = np.eye(nz)
 
+    theta = np.hstack((Z_np, U_np))
+    gram_theta = gram_matrix(theta)
+    cross = (theta.T @ Z_next_np) / n
+    constant = np.sum(Z_next_np**2) / n
+
     A_var = cp.Variable((nz, nz))
     B_var = cp.Variable((nz, 1))
+    M = cp.hstack((A_var, B_var))
 
-    residual = Z_next_np - Z_np @ A_var.T - U_np @ B_var.T
+    quadratic_terms = []
+    for output_index in range(nz):
+        row = M[output_index, :]
+        quadratic_terms.append(
+            cp.quad_form(row, gram_theta)
+            - 2.0 * cross[:, output_index] @ row
+        )
+
+    mse_objective = cp.sum(quadratic_terms) + constant
 
     lyapunov_lmi = cp.bmat(
         [
@@ -178,7 +237,7 @@ def identify_koopman_p_identity(Z, U, Z_next):
     ]
 
     problem = cp.Problem(
-        cp.Minimize(cp.sum_squares(residual)),
+        cp.Minimize(mse_objective),
         constraints,
     )
 
@@ -186,7 +245,8 @@ def identify_koopman_p_identity(Z, U, Z_next):
         solver=cp.SCS,
         verbose=False,
         eps=1e-5,
-        max_iters=30000,
+        max_iters=15000,
+        warm_start=True,
     )
 
     if A_var.value is None or B_var.value is None:
@@ -203,37 +263,32 @@ def identify_koopman_variable_p(Z, U, Z_next):
     r"""
     Stable Koopman identification with a variable Lyapunov matrix P.
 
-    Start from the classical discrete-time condition
+    Start from
 
         A^T P A - P < 0,    P > 0.
 
-    Define the change of variables
+    and define
 
         Y = P A,
         G = P B.
 
-    Since Y = P A, the Lyapunov condition can be written through the Schur
-    complement as
+    The stability condition becomes the LMI
 
         [ P   Y^T ] > 0.
         [ Y    P  ]
 
-    The identified dynamics
+    while the identified dynamics are left-multiplied by P:
 
-        z(k+1) ~= A z(k) + B u(k)
+        P z(k+1) ~= Y z(k) + G u(k).
 
-    are left-multiplied by P:
+    Thus the transformed residual is
 
-        P z(k+1) ~= Y z(k) + G u(k),
+        Z_next P - Z Y^T - U G^T.
 
-    which is affine in P, Y, and G. After solving the convex problem, recover
+    Its full 40,000-sample Frobenius norm is represented exactly by a small Gram
+    matrix. No subsampling is performed.
 
-        A = P^{-1} Y,
-        B = P^{-1} G.
-
-    trace(P) = nz removes the arbitrary scaling of (P, Y, G). Without a scale
-    normalization the transformed residual could be driven toward zero simply
-    by shrinking all three variables.
+    trace(P) = nz removes the arbitrary scaling of (P, Y, G).
     """
     Z_np = Z.numpy()
     U_np = U.numpy()
@@ -242,15 +297,25 @@ def identify_koopman_variable_p(Z, U, Z_next):
     nz = Z.shape[1]
     I = np.eye(nz)
 
+    # If
+    #   D = [Z_next, Z, U]
+    # and
+    #   C = [P; -Y^T; -G^T],
+    # then the transformed residual is simply D C.
+    D = np.hstack((Z_next_np, Z_np, U_np))
+    gram_D = gram_matrix(D)
+
     P = cp.Variable((nz, nz), symmetric=True)
     Y = cp.Variable((nz, nz))
     G = cp.Variable((nz, 1))
 
-    transformed_residual = (
-        Z_next_np @ P
-        - Z_np @ Y.T
-        - U_np @ G.T
-    )
+    C = cp.vstack((P, -Y.T, -G.T))
+
+    quadratic_terms = [
+        cp.quad_form(C[:, output_index], gram_D)
+        for output_index in range(nz)
+    ]
+    transformed_mse = cp.sum(quadratic_terms)
 
     schur_lmi = cp.bmat(
         [
@@ -266,7 +331,7 @@ def identify_koopman_variable_p(Z, U, Z_next):
     ]
 
     problem = cp.Problem(
-        cp.Minimize(cp.sum_squares(transformed_residual)),
+        cp.Minimize(transformed_mse),
         constraints,
     )
 
@@ -274,7 +339,8 @@ def identify_koopman_variable_p(Z, U, Z_next):
         solver=cp.SCS,
         verbose=False,
         eps=1e-5,
-        max_iters=30000,
+        max_iters=15000,
+        warm_start=True,
     )
 
     if P.value is None or Y.value is None or G.value is None:
@@ -282,7 +348,7 @@ def identify_koopman_variable_p(Z, U, Z_next):
             f"Variable-P identification failed. Solver status: {problem.status}"
         )
 
-    # Use solve instead of explicitly forming inv(P) for better numerics.
+    # Better conditioned than explicitly forming inv(P).
     A_np = np.linalg.solve(P.value, Y.value)
     B_np = np.linalg.solve(P.value, G.value)
 
@@ -346,11 +412,8 @@ def build_test_trajectory():
 
     x0_test = torch.tensor([-0.6, 1.4], dtype=torch.float64)
 
-    U_test = []
-    for k in range(N_test):
-        u = 0.8 * torch.sin(torch.tensor(0.2 * k, dtype=torch.float64))
-        U_test.append(u)
-    U_test = torch.stack(U_test)
+    k = torch.arange(N_test, dtype=torch.float64)
+    U_test = 0.8 * torch.sin(0.2 * k)
 
     x_real = x0_test.clone()
     X_real = [x_real]
@@ -421,31 +484,44 @@ def plot_comparison(t_test, X_real, model_trajectories):
 # -----------------------------------------------------------------------------
 
 def main():
-    print("Generating the Duffing training dataset...")
-    X, U, X_next, Z, Z_next = generate_training_dataset()
-    nz = Z.shape[1]
+    total_start = time.perf_counter()
 
+    stage_start = time.perf_counter()
+    print("Generating Duffing dataset + vectorized lifting...")
+    X, U, X_next, Z, Z_next = generate_training_dataset()
+    print(f"  done in {time.perf_counter() - stage_start:.3f} s")
+
+    nz = Z.shape[1]
     print(f"Samples: {Z.shape[0]}")
     print(f"Lifted-state dimension: {nz}")
 
+    stage_start = time.perf_counter()
     print("\n[1/3] Standard Koopman least squares...")
     A_ls, B_ls = identify_koopman_least_squares(Z, U, Z_next)
+    print(f"  done in {time.perf_counter() - stage_start:.3f} s")
 
+    stage_start = time.perf_counter()
     print("[2/3] Koopman with classical Lyapunov condition, P = I...")
     A_identity, B_identity, status_identity, objective_identity = (
         identify_koopman_p_identity(Z, U, Z_next)
     )
+    print(f"  done in {time.perf_counter() - stage_start:.3f} s")
 
+    stage_start = time.perf_counter()
     print("[3/3] Koopman with variable P + change of variables + Schur LMI...")
     A_p, B_p, P_p, status_p, objective_p = identify_koopman_variable_p(
         Z, U, Z_next
     )
+    print(f"  done in {time.perf_counter() - stage_start:.3f} s")
 
     t_test, x0_test, U_test, X_real = build_test_trajectory()
 
     Z_ls = simulate_identified_model(A_ls, B_ls, x0_test, U_test)
     Z_identity = simulate_identified_model(
-        A_identity, B_identity, x0_test, U_test
+        A_identity,
+        B_identity,
+        x0_test,
+        U_test,
     )
     Z_p = simulate_identified_model(A_p, B_p, x0_test, U_test)
 
@@ -511,6 +587,8 @@ def main():
         f"[{torch.min(torch.linalg.eigvalsh(P_p)).item():.6e}, "
         f"{torch.max(torch.linalg.eigvalsh(P_p)).item():.6e}]"
     )
+
+    print(f"\nTotal runtime: {time.perf_counter() - total_start:.3f} s")
 
     plot_comparison(
         t_test,
