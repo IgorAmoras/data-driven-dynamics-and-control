@@ -1,27 +1,27 @@
 # Duffing oscillator - input/output Koopman identification
 #
 # Goal of this experiment
-# -----------------------
+
 # Identify a predictive model using ONLY measured input u and output y.
 # The internal state x = [x1, x2] is used only inside the simulated plant
 # to generate data. It is never given to the identification algorithm.
-#
-# Plant (same Duffing example used in the current repository/article):
+
+# Plant (same as in SiShiAta 2026):
 #   dx1/dt = x2
 #   dx2/dt = -delta*x2 - x1*cos(x1 + x2) + u
-#
+
 # Output used in the article:
 #   y = [0 1] x = x2
-#
+
 # With one delay (nD = 1), we define an input/output delay state:
 #   zeta_k = [y_k, y_{k-1}, u_{k-1}]^T
 #
 # and identify
-#   zeta_{k+1} ~= A_delay zeta_k + B_delay u_k            (linear baseline)
+#   zeta_{k+1} ~= A_delay zeta_k + B_delay u_k            
 #
 # followed by the Koopman-lifted model
 #   z_k = psi(zeta_k) = [zeta_k, RBF_1(zeta_k), ..., RBF_N(zeta_k)]^T
-#   z_{k+1} ~= A z_k + B u_k                               (Koopman model)
+#   z_{k+1} ~= A z_k + B u_k                               
 #
 # No stability constraint is imposed here on purpose. This file isolates the
 # input/output question. LMI/Lyapunov constraints can be added afterwards.
@@ -30,33 +30,24 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import torch
-
-
-# =============================================================================
-# 1. Reproducibility and simulation parameters
-# =============================================================================
-
+# Simulation parameters
 torch.set_default_dtype(torch.float64)
 torch.manual_seed(156)
 
 dt = 0.01
 delta = 2.0
 
-N_trajectories = 20_000
+N_trajectories = 20000
 N_steps = 2              # enough for y0 -> y1 -> y2 when using one delay
 Nrbf = 10
 
-# Output matrix used in the authors' Duffing example: y = x2
+# Output matrix used in the authors Duffing example: y = x2
 Cy = torch.tensor([0.0, 1.0])
 
 
-# =============================================================================
-# 2. True nonlinear plant
-# =============================================================================
-
+# Dynamics of the Duffing oscillator, used for simulation only. The identifier never receives x, only y and u.
 
 def dynamics(x, u):
-    """Continuous-time Duffing dynamics. Works for one state or a batch."""
     x1 = x[..., 0]
     x2 = x[..., 1]
 
@@ -65,9 +56,9 @@ def dynamics(x, u):
 
     return torch.stack([dx1, dx2], dim=-1)
 
+# Using RK4 integration
 
 def simulate_step(x, u):
-    """One discrete step using explicit RK4, with u constant over the step."""
     k1 = dynamics(x, u)
     k2 = dynamics(x + 0.5 * dt * k1, u)
     k3 = dynamics(x + 0.5 * dt * k2, u)
@@ -77,14 +68,11 @@ def simulate_step(x, u):
 
 
 def output(x):
-    """Measured output y = Cy*x = x2. The identifier never receives x."""
     return x @ Cy
 
 
-# =============================================================================
-# 3. Build an INPUT/OUTPUT training dataset
-# =============================================================================
-#
+# i/o training dataset
+
 # For every independent trajectory:
 #
 #   x0 --u0--> x1 --u1--> x2
