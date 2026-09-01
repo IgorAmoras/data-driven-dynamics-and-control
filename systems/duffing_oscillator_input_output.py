@@ -3,18 +3,18 @@
 # dot{x2} = -delta*x2 - x1*cos(x1 + x2) + u
 # y = x2
 
-from pathlib import Path
-
 import matplotlib.pyplot as plt
 import torch
 
-# Parameters of simulation
+# For reproducibility purposes
 torch.set_default_dtype(torch.float64)
 torch.manual_seed(156)
 
+# Parameters of simulation
 dt = 0.01
 delta = 2.0
 
+# Parameters of the training dataset
 N_trajectories = 20000
 N_steps = 2
 Nrbf = 10
@@ -44,6 +44,7 @@ def simulate_step(x, u):
     return x + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
 
+# Output of the Duffing oscillator
 def output(x):
     return x @ Cy
 
@@ -114,31 +115,6 @@ A = K[:Nz, :].T
 B = K[Nz:, :].T
 
 
-# Reconstruction of the unmeasured state x1 from the I/O representation
-X_state_train = x1
-X1_state_train = X_state_train[:, 0]
-
-w_x1_delay = torch.linalg.lstsq(
-    ZETA,
-    X1_state_train,
-).solution
-
-w_x1_koopman = torch.linalg.lstsq(
-    Z,
-    X1_state_train,
-).solution
-
-X1_train_hat_delay = ZETA @ w_x1_delay
-X1_train_hat_koopman = Z @ w_x1_koopman
-
-state_train_rmse_delay = torch.sqrt(
-    torch.mean((X1_train_hat_delay - X1_state_train) ** 2)
-)
-state_train_rmse_koopman = torch.sqrt(
-    torch.mean((X1_train_hat_koopman - X1_state_train) ** 2)
-)
-
-
 # Training diagnostics
 Z_next_hat_train = Z @ A.T + U @ B.T
 Y_next_hat_train = Z_next_hat_train[:, 0]
@@ -152,7 +128,7 @@ rho_A = torch.max(torch.abs(torch.linalg.eigvals(A)))
 rho_A_delay = torch.max(torch.abs(torch.linalg.eigvals(A_delay)))
 
 
-# Test trajectory
+# Test against the real system
 T_test = 10.0
 N_test = int(T_test / dt)
 t_test = torch.arange(N_test + 1) * dt
@@ -163,21 +139,17 @@ U_test = 0.8 * torch.sin(
     torch.arange(N_test) * 0.2
 )
 
-# Real nonlinear trajectory, used only for validation
 x_true = x0_test.clone()
-X_true = [x_true.clone()]
 Y_true = [output(x_true)]
 
 for k in range(N_test):
     x_true = simulate_step(x_true, U_test[k])
-    X_true.append(x_true.clone())
     Y_true.append(output(x_true))
 
-X_true = torch.stack(X_true)
 Y_true = torch.stack(Y_true)
 
 
-# One-step-ahead prediction using the real I/O history
+# One-step-ahead prediction using the real input/output history
 Y_one_step_delay = [Y_true[0], Y_true[1]]
 Y_one_step_koopman = [Y_true[0], Y_true[1]]
 
@@ -198,24 +170,6 @@ for k in range(1, N_test):
 Y_one_step_delay = torch.stack(Y_one_step_delay)
 Y_one_step_koopman = torch.stack(Y_one_step_koopman)
 
-# State reconstruction using the real I/O history
-X1_reconstructed_delay = [X_true[0, 0]]
-X1_reconstructed_koopman = [X_true[0, 0]]
-
-for k in range(1, N_test + 1):
-    zeta_true = torch.stack([
-        Y_true[k],
-        Y_true[k - 1],
-        U_test[k - 1],
-    ])
-    z_true = create_koopman_state(zeta_true)
-
-    X1_reconstructed_delay.append(zeta_true @ w_x1_delay)
-    X1_reconstructed_koopman.append(z_true @ w_x1_koopman)
-
-X1_reconstructed_delay = torch.stack(X1_reconstructed_delay)
-X1_reconstructed_koopman = torch.stack(X1_reconstructed_koopman)
-
 
 # Free rollout using one measured transition for initialization
 zeta_initial = torch.stack([
@@ -227,32 +181,22 @@ zeta_initial = torch.stack([
 # Linear delay model rollout
 zeta_delay = zeta_initial.clone()
 Y_rollout_delay = [Y_true[0], Y_true[1]]
-X1_rollout_delay = [X_true[0, 0], zeta_delay @ w_x1_delay]
 
 for k in range(1, N_test):
     zeta_delay = A_delay @ zeta_delay + B_delay[:, 0] * U_test[k]
     Y_rollout_delay.append(zeta_delay[0])
-    X1_rollout_delay.append(zeta_delay @ w_x1_delay)
 
 Y_rollout_delay = torch.stack(Y_rollout_delay)
-X1_rollout_delay = torch.stack(X1_rollout_delay)
 
 # Koopman rollout
 z_koopman = create_koopman_state(zeta_initial)
 Y_rollout_koopman = [Y_true[0], Y_true[1]]
-X1_rollout_koopman = [X_true[0, 0], z_koopman @ w_x1_koopman]
 
 for k in range(1, N_test):
     z_koopman = A @ z_koopman + B[:, 0] * U_test[k]
     Y_rollout_koopman.append(z_koopman[0])
-    X1_rollout_koopman.append(z_koopman @ w_x1_koopman)
 
 Y_rollout_koopman = torch.stack(Y_rollout_koopman)
-X1_rollout_koopman = torch.stack(X1_rollout_koopman)
-
-# x2 is directly measured because y = x2
-X_rollout_delay = torch.stack([X1_rollout_delay, Y_rollout_delay], dim=1)
-X_rollout_koopman = torch.stack([X1_rollout_koopman, Y_rollout_koopman], dim=1)
 
 
 # Error metrics
@@ -284,31 +228,13 @@ roll_koop_mae, roll_koop_rmse, roll_koop_iae = metrics(
     Y_rollout_koopman,
 )
 
-# Hidden-state reconstruction metrics
-_, state_decode_delay_rmse, _ = metrics(
-    X_true[:, 0],
-    X1_reconstructed_delay,
-)
-_, state_decode_koop_rmse, _ = metrics(
-    X_true[:, 0],
-    X1_reconstructed_koopman,
-)
-_, state_roll_delay_rmse, _ = metrics(
-    X_true[:, 0],
-    X1_rollout_delay,
-)
-_, state_roll_koop_rmse, _ = metrics(
-    X_true[:, 0],
-    X1_rollout_koopman,
-)
-
 
 # Results
 print("\n" + "=" * 78)
 print("DUFFING - INPUT/OUTPUT IDENTIFICATION")
 print("=" * 78)
-print(f"Measured output: y = x2")
-print(f"Delay state: zeta_k = [y_k, y_(k-1), u_(k-1)]")
+print("Measured output: y = x2")
+print("Delay state: zeta_k = [y_k, y_(k-1), u_(k-1)]")
 print(f"Training trajectories: {N_trajectories}")
 print(f"Delay-state dimension: {n_zeta}")
 print(f"Lifted dimension: {Nz} = {n_zeta} raw I/O coordinates + {Nrbf} RBFs")
@@ -321,95 +247,39 @@ print("\nSpectral radius")
 print(f"  Linear delay A : {rho_A_delay.item():.8f}")
 print(f"  Koopman A      : {rho_A.item():.8f}")
 
-print("\nTest - one-step ahead (true history supplied at every step)")
+print("\nTest - one-step ahead")
 print(f"  Linear delay -> MAE={one_delay_mae:.8f} | RMSE={one_delay_rmse:.8f} | IAE={one_delay_iae:.8f}")
 print(f"  Koopman      -> MAE={one_koop_mae:.8f} | RMSE={one_koop_rmse:.8f} | IAE={one_koop_iae:.8f}")
 
-print("\nTest - free rollout (only y0, y1 and u0 used for initialization)")
+print("\nTest - free rollout")
 print(f"  Linear delay -> MAE={roll_delay_mae:.8f} | RMSE={roll_delay_rmse:.8f} | IAE={roll_delay_iae:.8f}")
 print(f"  Koopman      -> MAE={roll_koop_mae:.8f} | RMSE={roll_koop_rmse:.8f} | IAE={roll_koop_iae:.8f}")
-
-print("\nHidden-state reconstruction: x1 from I/O history")
-print(f"  Training decoder RMSE - linear delay : {state_train_rmse_delay.item():.8f}")
-print(f"  Training decoder RMSE - Koopman      : {state_train_rmse_koopman.item():.8f}")
-print(f"  Test decoder RMSE (true I/O history) - linear delay : {state_decode_delay_rmse:.8f}")
-print(f"  Test decoder RMSE (true I/O history) - Koopman      : {state_decode_koop_rmse:.8f}")
-print(f"  Test x1 RMSE (free rollout) - linear delay : {state_roll_delay_rmse:.8f}")
-print(f"  Test x1 RMSE (free rollout) - Koopman      : {state_roll_koop_rmse:.8f}")
 print("=" * 78)
 
 
-# Comparison of the output and reconstructed states
-fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
-
-# Measured output
-axes[0].plot(
+# Comparison of the output trajectories
+plt.figure(figsize=(12, 5))
+plt.plot(
     t_test.numpy(),
     Y_true.numpy(),
-    label="Real output",
+    label="Real system",
 )
-axes[0].plot(
+plt.plot(
     t_test.numpy(),
     Y_rollout_delay.numpy(),
     "--",
     label="Linear I/O delay",
 )
-axes[0].plot(
+plt.plot(
     t_test.numpy(),
     Y_rollout_koopman.numpy(),
-    "--",
+    "-.",
     label="Koopman I/O + RBF",
 )
-axes[0].set_title("Output prediction: y = x2")
-axes[0].set_ylabel("y")
-axes[0].grid()
-axes[0].legend()
-
-# Reconstructed state x1
-axes[1].plot(
-    t_test.numpy(),
-    X_true[:, 0].numpy(),
-    label="True x1 (validation only)",
-)
-axes[1].plot(
-    t_test.numpy(),
-    X1_rollout_delay.numpy(),
-    "--",
-    label="Reconstructed x1 - linear delay",
-)
-axes[1].plot(
-    t_test.numpy(),
-    X1_rollout_koopman.numpy(),
-    "--",
-    label="Reconstructed x1 - Koopman",
-)
-axes[1].set_title("Hidden-state reconstruction from input/output history")
-axes[1].set_ylabel("x1")
-axes[1].grid()
-axes[1].legend()
-
-# State x2 = y
-axes[2].plot(
-    t_test.numpy(),
-    X_true[:, 1].numpy(),
-    label="True x2",
-)
-axes[2].plot(
-    t_test.numpy(),
-    X_rollout_koopman[:, 1].numpy(),
-    "--",
-    label="Reconstructed x2 = predicted y",
-)
-axes[2].set_title("Second physical state (directly measured output)")
-axes[2].set_xlabel("Time [s]")
-axes[2].set_ylabel("x2")
-axes[2].grid()
-axes[2].legend()
-
+plt.title("Output y = x2")
+plt.xlabel("Time [s]")
+plt.ylabel("y")
+plt.grid()
+plt.legend()
 plt.tight_layout()
-
-plot_path = Path(__file__).with_name("duffing_input_output_states.png")
-plt.savefig(plot_path, dpi=160)
-print(f"\nPlot saved to: {plot_path}")
-
-# plt.show()
+plt.show()
