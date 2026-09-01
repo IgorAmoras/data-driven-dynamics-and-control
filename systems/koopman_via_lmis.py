@@ -34,7 +34,7 @@ c = -1.0 + 2.0 * torch.rand((Nrbf, 2), dtype=torch.float64)
 N_trajectories = 20000
 N_steps = 2
 
-# Weight used in the original soft constraint
+# Weight used in the soft constraint
 lambda_soft = 500.0
 
 # Numerical margins for the hard LMIs
@@ -89,7 +89,7 @@ def lift_batch(X_batch):
 
 
 # Generation of the training random variables
-def draw_gold_training_random_variables():
+def draw_training_random_variables():
     initial_states = torch.empty((N_trajectories, 2), dtype=torch.float64)
     inputs = torch.empty((N_trajectories, N_steps), dtype=torch.float64)
 
@@ -137,14 +137,14 @@ def verify_batched_odeint_parity(initial_states, inputs):
 
     if max_error > PARITY_TOL:
         raise RuntimeError(
-            "Batched torchdiffeq does not reproduce the scalar GOLD baseline: "
+            "Batched torchdiffeq does not reproduce the scalar implementation: "
             f"{max_error:.3e} > {PARITY_TOL:.1e}."
         )
 
 
 # Training dataset
 def generate_training_dataset():
-    initial_states, inputs = draw_gold_training_random_variables()
+    initial_states, inputs = draw_training_random_variables()
     verify_batched_odeint_parity(initial_states, inputs)
 
     x = initial_states.clone()
@@ -204,23 +204,8 @@ def ls_quadratic_expression(A_var, B_var, Z_np, U_np, Z_next_np, normalize=True)
     return cp.sum(terms) + constant
 
 
-# Koopman with least squares regression
-def identify_koopman_least_squares(Z, U, Z_next):
-    Theta = torch.cat((Z, U), dim=1)
-    K = torch.linalg.lstsq(
-        Theta,
-        Z_next,
-    ).solution
-
-    Nz = Z.shape[1]
-    A = K[:Nz, :].T
-    B = K[Nz:, :].T
-
-    return A, B
-
-
-# Koopman with the original soft stability constraint
-def identify_koopman_soft_gold(Z, U, Z_next):
+# Koopman with soft stability constraint
+def identify_koopman_soft(Z, U, Z_next):
     Z_np = Z.numpy()
     U_np = U.numpy()
     Z_next_np = Z_next.numpy()
@@ -264,7 +249,7 @@ def identify_koopman_soft_gold(Z, U, Z_next):
 
     if A_var.value is None or B_var.value is None or gamma.value is None:
         raise RuntimeError(
-            f"Soft GOLD identification failed. Solver status: {problem.status}"
+            f"Soft identification failed. Solver status: {problem.status}"
         )
 
     A = torch.tensor(A_var.value, dtype=torch.float64)
@@ -479,7 +464,7 @@ def build_test_trajectory():
 # Comparison table
 def print_comparison_table(results):
     print("\n" + "=" * 114)
-    print("KOOPMAN IDENTIFICATION - SAME DATA / SAME TEST / FOUR IDENTIFICATION METHODS")
+    print("KOOPMAN IDENTIFICATION - SAME DATA / SAME TEST / THREE IDENTIFICATION METHODS")
     print("=" * 114)
     print(
         f"{'Model':<31}"
@@ -507,11 +492,7 @@ def print_comparison_table(results):
 # Comparison of the trajectories
 def plot_comparison(t_test, X_real, model_trajectories):
     styles = {
-        "Koopman LS (GOLD)": {
-            "linestyle": "--",
-            "linewidth": 2.0,
-        },
-        "Koopman soft (GOLD)": {
+        "Koopman soft": {
             "linestyle": (0, (6, 2, 1, 2)),
             "linewidth": 2.0,
             "marker": "o",
@@ -569,7 +550,7 @@ def main():
     total_start = time.perf_counter()
 
     stage_start = time.perf_counter()
-    print("Generating GOLD Duffing dataset with torchdiffeq RK4...")
+    print("Generating Duffing dataset with torchdiffeq RK4...")
     X, U, X_next, Z, Z_next = generate_training_dataset()
     print(f"  done in {time.perf_counter() - stage_start:.3f} s")
 
@@ -578,26 +559,21 @@ def main():
     print(f"Lifted-state dimension: {nz}")
 
     stage_start = time.perf_counter()
-    print("\n[1/4] GOLD Koopman least squares...")
-    A_ls, B_ls = identify_koopman_least_squares(Z, U, Z_next)
-    print(f"  done in {time.perf_counter() - stage_start:.3f} s")
-
-    stage_start = time.perf_counter()
-    print("[2/4] GOLD Koopman soft constraint (lambda=500)...")
+    print("\n[1/3] Koopman soft constraint (lambda=500)...")
     A_soft, B_soft, gamma_soft, status_soft, objective_soft = (
-        identify_koopman_soft_gold(Z, U, Z_next)
+        identify_koopman_soft(Z, U, Z_next)
     )
     print(f"  done in {time.perf_counter() - stage_start:.3f} s")
 
     stage_start = time.perf_counter()
-    print("[3/4] Koopman with hard Lyapunov condition, P = I...")
+    print("[2/3] Koopman with hard Lyapunov condition, P = I...")
     A_identity, B_identity, status_identity, objective_identity = (
         identify_koopman_p_identity(Z, U, Z_next)
     )
     print(f"  done in {time.perf_counter() - stage_start:.3f} s")
 
     stage_start = time.perf_counter()
-    print("[4/4] Koopman with variable P + Schur/Lyapunov LMI...")
+    print("[3/3] Koopman with variable P + Schur/Lyapunov LMI...")
     A_p, B_p, P_p, status_p, objective_p = identify_koopman_variable_p(
         Z,
         U,
@@ -607,7 +583,6 @@ def main():
 
     t_test, x0_test, U_test, X_real = build_test_trajectory()
 
-    Z_ls = simulate_identified_model(A_ls, B_ls, x0_test, U_test)
     Z_soft = simulate_identified_model(A_soft, B_soft, x0_test, U_test)
     Z_identity = simulate_identified_model(
         A_identity,
@@ -618,8 +593,7 @@ def main():
     Z_p = simulate_identified_model(A_p, B_p, x0_test, U_test)
 
     models = [
-        ("Koopman LS (GOLD)", A_ls, B_ls, Z_ls),
-        ("Koopman soft (GOLD)", A_soft, B_soft, Z_soft),
+        ("Koopman soft", A_soft, B_soft, Z_soft),
         ("Koopman P=I", A_identity, B_identity, Z_identity),
         ("Koopman variable P", A_p, B_p, Z_p),
     ]
@@ -665,11 +639,11 @@ def main():
 
     print("\nConstraint / solver verification")
     print("--------------------------------")
-    print(f"Soft GOLD solver status:           {status_soft}")
-    print(f"Soft GOLD objective:               {objective_soft:.6e}")
-    print(f"Soft GOLD gamma:                   {gamma_soft:.6e}")
-    print(f"Soft GOLD ||A||2:                  {spectral_norm(A_soft):.6e}")
-    print(f"Soft GOLD gamma-||A||2:            {gamma_soft - spectral_norm(A_soft):.6e}")
+    print(f"Soft solver status:                {status_soft}")
+    print(f"Soft objective:                    {objective_soft:.6e}")
+    print(f"Soft gamma:                        {gamma_soft:.6e}")
+    print(f"Soft ||A||2:                       {spectral_norm(A_soft):.6e}")
+    print(f"Soft gamma-||A||2:                 {gamma_soft - spectral_norm(A_soft):.6e}")
     print()
     print(f"P=I solver status:                 {status_identity}")
     print(f"P=I optimization objective:        {objective_identity:.6e}")
@@ -697,8 +671,7 @@ def main():
         t_test,
         X_real,
         [
-            ("Koopman LS (GOLD)", Z_ls),
-            ("Koopman soft (GOLD)", Z_soft),
+            ("Koopman soft", Z_soft),
             ("Koopman P=I", Z_identity),
             ("Koopman variable P", Z_p),
         ],
