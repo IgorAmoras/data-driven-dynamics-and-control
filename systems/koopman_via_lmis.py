@@ -1,28 +1,32 @@
-# Duffing oscillator - Koopman identification with hard stability constraints via LMIs
+# Duffing oscillator - Koopman identification with stability constraints
 #
 # FAIR-COMPARISON EXPERIMENT
 # --------------------------
-# This file intentionally treats systems/duffing_oscillator.py as the GOLD
-# baseline. The unconstrained Koopman model must be generated with the same:
-#   - seed (156)
-#   - dt (0.01 s)
-#   - Duffing dynamics
-#   - torchdiffeq odeint integrator, method='rk4', step_size=dt
+# systems/duffing_oscillator.py is treated as the GOLD baseline.
+# All models below use the same data, lifting and validation trajectory.
+#
+# Compared models:
+#   1) Koopman LS (GOLD): original unconstrained least-squares identification
+#   2) Koopman soft (GOLD): original soft norm-2 penalty from duffing_oscillator.py
+#   3) Koopman P=I: hard Euclidean contraction constraint
+#   4) Koopman variable P: Lyapunov/Schur condition with Y = P A, G = P B
+#
+# GOLD experiment parameters preserved:
+#   - seed = 156
+#   - dt = 0.01 s
+#   - torchdiffeq odeint, method='rk4', step_size=dt
 #   - 20,000 independent trajectories, 2 steps each
-#   - 10 thin-plate RBFs and the same random centers
-#   - torch.linalg.lstsq identification
-#   - test x0 = [-0.6, 1.4]
-#   - test input u(k) = 0.8 sin(0.2 k)
+#   - 10 thin-plate RBFs, same random centers
+#   - x0_test = [-0.6, 1.4]
+#   - u(k) = 0.8 sin(0.2 k)
 #
-# The only additions are the two hard-stability identification methods and
-# quantitative metrics. Performance optimizations are allowed only when they do
-# not change the numerical experiment:
-#   - torchdiffeq is evaluated in batch instead of once per sample;
+# Performance optimizations do not discard samples:
+#   - torchdiffeq is evaluated in batch after reproducing the original RNG order;
 #   - RBF lifting is vectorized;
-#   - CVXPY least-squares objectives are represented through Gram matrices.
+#   - CVXPY least-squares objectives are represented exactly through Gram matrices.
 #
-# The script verifies that batched torchdiffeq integration matches scalar
-# torchdiffeq integration before running the identification.
+# The script verifies batched torchdiffeq against scalar torchdiffeq before the
+# identification starts.
 
 import time
 
@@ -34,7 +38,7 @@ from torchdiffeq import odeint
 
 
 # -----------------------------------------------------------------------------
-# GOLD baseline parameters: copied from systems/duffing_oscillator.py
+# GOLD baseline parameters
 # -----------------------------------------------------------------------------
 
 torch.manual_seed(156)
@@ -48,8 +52,7 @@ options = {"step_size": dt}
 
 delta = 2.0
 
-# These draws exist in the original baseline before the RBF centers are drawn.
-# Keep them, even though they are not otherwise used, so c is identical.
+# Preserve the exact RNG state before drawing RBF centers.
 x0 = -1.0 + 2.0 * torch.rand(2, dtype=torch.float64)
 u0 = -1.0 + 2.0 * torch.rand((), dtype=torch.float64)
 
@@ -59,27 +62,22 @@ c = -1.0 + 2.0 * torch.rand((Nrbf, 2), dtype=torch.float64)
 N_trajectories = 20000
 N_steps = 2
 
-# Strict-LMI numerical margins.
+# Original soft penalty from duffing_oscillator.py.
+lambda_soft = 500.0
+
+# Strict-LMI numerical margins for the hard-constraint experiments.
 LMI_EPS = 1e-6
 P_MIN_EIG = 1e-3
 
-# Number of trajectories used only for an integration parity check.
 PARITY_CHECK_TRAJECTORIES = 5
 PARITY_TOL = 1e-12
 
 
 # -----------------------------------------------------------------------------
-# Duffing dynamics and EXACT baseline integrator
+# Duffing dynamics and exact GOLD integrator
 # -----------------------------------------------------------------------------
 
 def dynamics(t, x, u):
-    """
-    Duffing dynamics.
-
-    The original baseline receives a state with shape (2,). This implementation
-    also supports (..., 2), allowing torchdiffeq to integrate all independent
-    trajectories in one batch without changing the underlying RK4 method.
-    """
     x1 = x[..., 0]
     x2 = x[..., 1]
 
@@ -90,7 +88,7 @@ def dynamics(t, x, u):
 
 
 def simulate_step(x, u):
-    """Exactly the same torchdiffeq RK4 call used by duffing_oscillator.py."""
+    """Same torchdiffeq RK4 call used by duffing_oscillator.py."""
     t_step = torch.tensor([0.0, dt], dtype=torch.float64)
     solution = odeint(
         lambda current_t, current_x: dynamics(current_t, current_x, u),
@@ -103,7 +101,7 @@ def simulate_step(x, u):
 
 
 # -----------------------------------------------------------------------------
-# Koopman lifting: same thin-plate RBF definition as the GOLD baseline
+# Koopman lifting
 # -----------------------------------------------------------------------------
 
 def create_koopman_state(x, centers, n_rbf):
@@ -118,7 +116,6 @@ def create_koopman_state(x, centers, n_rbf):
 
 
 def lift_batch(X_batch):
-    """Vectorized form of create_koopman_state for the complete dataset."""
     diff = X_batch[:, None, :] - c[None, :, :]
     r = torch.norm(diff, dim=2)
     phi = r**2 * torch.log(r + 1e-6)
@@ -126,22 +123,11 @@ def lift_batch(X_batch):
 
 
 # -----------------------------------------------------------------------------
-# GOLD dataset generation, batched only at the ODE-evaluation level
+# GOLD dataset generation
 # -----------------------------------------------------------------------------
 
 def draw_gold_training_random_variables():
-    """
-    Draw initial conditions and inputs in the exact RNG call order of the
-    original nested loop.
-
-    The original loop does, for each trajectory:
-        rand(2) -> x0
-        rand(()) -> u at step 0
-        rand(()) -> u at step 1
-
-    ODE integration consumes no random numbers, so we can first reproduce all
-    random draws and only then integrate the trajectories in batch.
-    """
+    """Reproduce the exact random-draw order of the original nested loop."""
     initial_states = torch.empty((N_trajectories, 2), dtype=torch.float64)
     inputs = torch.empty((N_trajectories, N_steps), dtype=torch.float64)
 
@@ -160,12 +146,7 @@ def draw_gold_training_random_variables():
 
 
 def verify_batched_odeint_parity(initial_states, inputs):
-    """
-    Compare batched torchdiffeq against scalar torchdiffeq on a few trajectories.
-
-    A failure here means we are NOT reproducing the original LS experiment and
-    the script stops before any comparison is made.
-    """
+    """Abort if batched integration does not reproduce scalar GOLD integration."""
     n_check = min(PARITY_CHECK_TRAJECTORIES, initial_states.shape[0])
 
     x_batch = initial_states[:n_check].clone()
@@ -173,8 +154,7 @@ def verify_batched_odeint_parity(initial_states, inputs):
     max_error = 0.0
 
     for step in range(N_steps):
-        u_batch = inputs[:n_check, step]
-        x_batch = simulate_step(x_batch, u_batch)
+        x_batch = simulate_step(x_batch, inputs[:n_check, step])
 
         scalar_next = []
         for trajectory in range(n_check):
@@ -186,15 +166,17 @@ def verify_batched_odeint_parity(initial_states, inputs):
             )
         x_scalar = torch.stack(scalar_next)
 
-        error = torch.max(torch.abs(x_batch - x_scalar)).item()
-        max_error = max(max_error, error)
+        max_error = max(
+            max_error,
+            torch.max(torch.abs(x_batch - x_scalar)).item(),
+        )
 
     print(f"torchdiffeq batch/scalar parity max error: {max_error:.3e}")
 
     if max_error > PARITY_TOL:
         raise RuntimeError(
             "Batched torchdiffeq does not reproduce the scalar GOLD baseline: "
-            f"max error {max_error:.3e} > tolerance {PARITY_TOL:.1e}."
+            f"{max_error:.3e} > {PARITY_TOL:.1e}."
         )
 
 
@@ -204,17 +186,10 @@ def generate_training_dataset():
 
     x = initial_states.clone()
 
-    X = torch.empty(
-        (N_trajectories, N_steps, 2),
-        dtype=torch.float64,
-    )
-    U = torch.empty(
-        (N_trajectories, N_steps, 1),
-        dtype=torch.float64,
-    )
+    X = torch.empty((N_trajectories, N_steps, 2), dtype=torch.float64)
+    U = torch.empty((N_trajectories, N_steps, 1), dtype=torch.float64)
     X_next = torch.empty_like(X)
 
-    # Only N_steps=2 calls to the exact torchdiffeq integrator are required.
     for step in range(N_steps):
         u = inputs[:, step]
         x_next = simulate_step(x, u)
@@ -225,9 +200,6 @@ def generate_training_dataset():
 
         x = x_next
 
-    # Original ordering:
-    # trajectory 0 step 0, trajectory 0 step 1,
-    # trajectory 1 step 0, trajectory 1 step 1, ...
     X = X.reshape(-1, 2)
     U = U.reshape(-1, 1)
     X_next = X_next.reshape(-1, 2)
@@ -239,15 +211,46 @@ def generate_training_dataset():
 
 
 # -----------------------------------------------------------------------------
-# Small quadratic objectives from sufficient statistics
+# Quadratic least-squares objectives from sufficient statistics
 # -----------------------------------------------------------------------------
 
-def gram_matrix(data):
-    """Return E[data^T data], symmetrized and marked PSD for CVXPY."""
-    n = data.shape[0]
-    gram = (data.T @ data) / n
+def psd_gram(data, normalize=True):
+    """Return data.T @ data, optionally normalized by the number of rows."""
+    gram = data.T @ data
+    if normalize:
+        gram = gram / data.shape[0]
     gram = 0.5 * (gram + gram.T)
     return cp.psd_wrap(gram)
+
+
+def ls_quadratic_expression(A_var, B_var, Z_np, U_np, Z_next_np, normalize=True):
+    """
+    Exact quadratic representation of
+
+        ||Z_next - Z A^T - U B^T||_F^2
+
+    using only small sufficient-statistic matrices. If normalize=True, the
+    entire expression is divided by the number of samples.
+    """
+    n = Z_np.shape[0]
+    theta = np.hstack((Z_np, U_np))
+
+    scale = n if normalize else 1.0
+    gram_theta = psd_gram(theta, normalize=normalize)
+    cross = (theta.T @ Z_next_np) / scale
+    constant = np.sum(Z_next_np**2) / scale
+
+    M = cp.hstack((A_var, B_var))
+
+    terms = []
+    for output_index in range(Z_next_np.shape[1]):
+        row = M[output_index, :]
+        terms.append(
+            cp.quad_form(row, gram_theta)
+            - 2.0 * cross[:, output_index] @ row
+        )
+
+    return cp.sum(terms) + constant
 
 
 # -----------------------------------------------------------------------------
@@ -255,12 +258,7 @@ def gram_matrix(data):
 # -----------------------------------------------------------------------------
 
 def identify_koopman_least_squares(Z, U, Z_next):
-    """
-    GOLD control/baseline.
-
-    This block is intentionally the same regression used by
-    systems/duffing_oscillator.py.
-    """
+    """Original unconstrained GOLD Koopman regression."""
     Theta = torch.cat((Z, U), dim=1)
     K = torch.linalg.lstsq(
         Theta,
@@ -274,45 +272,103 @@ def identify_koopman_least_squares(Z, U, Z_next):
     return A, B
 
 
-def identify_koopman_p_identity(Z, U, Z_next):
-    """
-    Koopman identification with P = I.
+def identify_koopman_soft_gold(Z, U, Z_next):
+    r"""
+    EXACT soft formulation from systems/duffing_oscillator.py:
 
-        A^T A - I < 0
+        min  sum_k ||e_k||^2 + lambda_soft * gamma^2
 
-    is imposed through the Schur-complement LMI
+    subject to
 
-        [ I   A   ] > 0.
-        [ A^T I   ]
+        [ gamma I    A   ] >= 0.
+        [   A^T    gamma I]
 
-    This is a contraction condition in the Euclidean norm.
+    The Gram-matrix expression below represents the same SUM of squared
+    residuals as the original 40,000-row cp.sum_squares(residual). This matters:
+    replacing the sum by a mean without rescaling lambda_soft would change the
+    experiment by a factor equal to the number of samples.
     """
     Z_np = Z.numpy()
     U_np = U.numpy()
     Z_next_np = Z_next.numpy()
 
-    n = Z_np.shape[0]
     nz = Z.shape[1]
     I = np.eye(nz)
 
-    theta = np.hstack((Z_np, U_np))
-    gram_theta = gram_matrix(theta)
-    cross = (theta.T @ Z_next_np) / n
-    constant = np.sum(Z_next_np**2) / n
+    A_var = cp.Variable((nz, nz))
+    B_var = cp.Variable((nz, 1))
+    gamma = cp.Variable()
+
+    residual_sum_squares = ls_quadratic_expression(
+        A_var,
+        B_var,
+        Z_np,
+        U_np,
+        Z_next_np,
+        normalize=False,
+    )
+
+    soft_lmi = cp.bmat(
+        [
+            [gamma * I, A_var],
+            [A_var.T, gamma * I],
+        ]
+    )
+
+    problem = cp.Problem(
+        cp.Minimize(
+            residual_sum_squares
+            + lambda_soft * cp.square(gamma)
+        ),
+        [soft_lmi >> 0],
+    )
+
+    # Same solver as the GOLD script. No extra hard stability margin is added.
+    problem.solve(
+        solver=cp.SCS,
+        verbose=False,
+    )
+
+    if A_var.value is None or B_var.value is None or gamma.value is None:
+        raise RuntimeError(
+            f"Soft GOLD identification failed. Solver status: {problem.status}"
+        )
+
+    A = torch.tensor(A_var.value, dtype=torch.float64)
+    B = torch.tensor(B_var.value, dtype=torch.float64)
+
+    return A, B, float(gamma.value), problem.status, problem.value
+
+
+def identify_koopman_p_identity(Z, U, Z_next):
+    r"""
+    Hard Euclidean contraction with P = I:
+
+        A^T A - I < 0.
+
+    An equivalent spectral-norm LMI is imposed as
+
+        [ I    A   ] > 0.
+        [ A^T  I   ]
+    """
+    Z_np = Z.numpy()
+    U_np = U.numpy()
+    Z_next_np = Z_next.numpy()
+
+    nz = Z.shape[1]
+    I = np.eye(nz)
 
     A_var = cp.Variable((nz, nz))
     B_var = cp.Variable((nz, 1))
-    M = cp.hstack((A_var, B_var))
 
-    quadratic_terms = []
-    for output_index in range(nz):
-        row = M[output_index, :]
-        quadratic_terms.append(
-            cp.quad_form(row, gram_theta)
-            - 2.0 * cross[:, output_index] @ row
-        )
-
-    mse_objective = cp.sum(quadratic_terms) + constant
+    mse_objective = ls_quadratic_expression(
+        A_var,
+        B_var,
+        Z_np,
+        U_np,
+        Z_next_np,
+        normalize=True,
+    )
 
     lyapunov_lmi = cp.bmat(
         [
@@ -321,13 +377,9 @@ def identify_koopman_p_identity(Z, U, Z_next):
         ]
     )
 
-    constraints = [
-        lyapunov_lmi >> LMI_EPS * np.eye(2 * nz),
-    ]
-
     problem = cp.Problem(
         cp.Minimize(mse_objective),
-        constraints,
+        [lyapunov_lmi >> LMI_EPS * np.eye(2 * nz)],
     )
 
     problem.solve(
@@ -351,31 +403,24 @@ def identify_koopman_p_identity(Z, U, Z_next):
 
 def identify_koopman_variable_p(Z, U, Z_next):
     r"""
-    Koopman identification with a free Lyapunov matrix P.
+    Hard Lyapunov/Schur stability with free P.
 
-    Starting from
+        A^T P A - P < 0,   P > 0.
 
-        A^T P A - P < 0,       P > 0,
+    With
 
-    define
+        Y = P A,   G = P B,
 
-        Y = P A,
-        G = P B.
-
-    The stability condition becomes
+    the stability condition is
 
         [ P   Y^T ] > 0,
         [ Y    P  ]
 
-    and the data equation is left-multiplied by P:
-
-        P z(k+1) ~= Y z(k) + G u(k).
-
-    In row-data form the residual is
+    and the transformed data residual is
 
         Z_next P - Z Y^T - U G^T.
 
-    trace(P) = nz fixes the otherwise arbitrary common scale of P, Y, and G.
+    trace(P) = nz fixes the common scale of P, Y and G.
     """
     Z_np = Z.numpy()
     U_np = U.numpy()
@@ -384,9 +429,8 @@ def identify_koopman_variable_p(Z, U, Z_next):
     nz = Z.shape[1]
     I = np.eye(nz)
 
-    # D C = Z_next P - Z Y^T - U G^T
     D = np.hstack((Z_next_np, Z_np, U_np))
-    gram_D = gram_matrix(D)
+    gram_D = psd_gram(D, normalize=True)
 
     P = cp.Variable((nz, nz), symmetric=True)
     Y = cp.Variable((nz, nz))
@@ -443,7 +487,7 @@ def identify_koopman_variable_p(Z, U, Z_next):
 
 
 # -----------------------------------------------------------------------------
-# Metrics and numerical verification
+# Metrics and verification
 # -----------------------------------------------------------------------------
 
 def spectral_radius(A):
@@ -535,22 +579,22 @@ def build_test_trajectory():
 # -----------------------------------------------------------------------------
 
 def print_comparison_table(results):
-    print("\n" + "=" * 112)
-    print("KOOPMAN IDENTIFICATION - GOLD LS BASELINE VS HARD STABILITY")
-    print("=" * 112)
+    print("\n" + "=" * 114)
+    print("KOOPMAN IDENTIFICATION - SAME DATA / SAME TEST / FOUR IDENTIFICATION METHODS")
+    print("=" * 114)
     print(
-        f"{'Model':<30}"
+        f"{'Model':<31}"
         f"{'rho(A)':>12}"
         f"{'||A||2':>12}"
         f"{'1-step z RMSE':>18}"
         f"{'1-step x RMSE':>18}"
         f"{'rollout x RMSE':>18}"
     )
-    print("-" * 112)
+    print("-" * 114)
 
     for result in results:
         print(
-            f"{result['name']:<30}"
+            f"{result['name']:<31}"
             f"{result['rho']:>12.6f}"
             f"{result['norm2']:>12.6f}"
             f"{result['one_step_z']:>18.6e}"
@@ -558,62 +602,64 @@ def print_comparison_table(results):
             f"{result['rollout_x']:>18.6e}"
         )
 
-    print("=" * 112)
+    print("=" * 114)
 
 
 def plot_comparison(t_test, X_real, model_trajectories):
-    """
-    Use distinct line styles so the plot remains readable without color cues.
-    """
+    """Use line style + markers, not color alone, for model identification."""
     styles = {
-        "Koopman LS (GOLD)": {"linestyle": "--", "linewidth": 2.0},
-        "Koopman P=I": {"linestyle": "-.", "linewidth": 1.8},
-        "Koopman variable P": {"linestyle": ":", "linewidth": 2.2},
+        "Koopman LS (GOLD)": {
+            "linestyle": "--",
+            "linewidth": 2.0,
+        },
+        "Koopman soft (GOLD)": {
+            "linestyle": (0, (6, 2, 1, 2)),
+            "linewidth": 2.0,
+            "marker": "o",
+            "markevery": 100,
+            "markersize": 3.5,
+        },
+        "Koopman P=I": {
+            "linestyle": "-.",
+            "linewidth": 1.8,
+            "marker": "s",
+            "markevery": 100,
+            "markersize": 3.5,
+        },
+        "Koopman variable P": {
+            "linestyle": ":",
+            "linewidth": 2.2,
+            "marker": "x",
+            "markevery": 100,
+            "markersize": 4.0,
+        },
     }
 
     plt.figure(figsize=(13, 5))
 
-    plt.subplot(1, 2, 1)
-    plt.plot(
-        t_test.numpy(),
-        X_real[:, 0].numpy(),
-        linestyle="-",
-        linewidth=2.5,
-        label="Real system",
-    )
-    for label, Z_model in model_trajectories:
+    for subplot_index, state_index in enumerate((0, 1), start=1):
+        plt.subplot(1, 2, subplot_index)
         plt.plot(
             t_test.numpy(),
-            Z_model[:, 0].numpy(),
-            label=label,
-            **styles[label],
+            X_real[:, state_index].numpy(),
+            linestyle="-",
+            linewidth=2.6,
+            label="Real system",
         )
-    plt.title("State x1")
-    plt.xlabel("Time [s]")
-    plt.ylabel("x1")
-    plt.grid()
-    plt.legend()
 
-    plt.subplot(1, 2, 2)
-    plt.plot(
-        t_test.numpy(),
-        X_real[:, 1].numpy(),
-        linestyle="-",
-        linewidth=2.5,
-        label="Real system",
-    )
-    for label, Z_model in model_trajectories:
-        plt.plot(
-            t_test.numpy(),
-            Z_model[:, 1].numpy(),
-            label=label,
-            **styles[label],
-        )
-    plt.title("State x2")
-    plt.xlabel("Time [s]")
-    plt.ylabel("x2")
-    plt.grid()
-    plt.legend()
+        for label, Z_model in model_trajectories:
+            plt.plot(
+                t_test.numpy(),
+                Z_model[:, state_index].numpy(),
+                label=label,
+                **styles[label],
+            )
+
+        plt.title(f"State x{state_index + 1}")
+        plt.xlabel("Time [s]")
+        plt.ylabel(f"x{state_index + 1}")
+        plt.grid()
+        plt.legend()
 
     plt.tight_layout()
     plt.show()
@@ -636,19 +682,26 @@ def main():
     print(f"Lifted-state dimension: {nz}")
 
     stage_start = time.perf_counter()
-    print("\n[1/3] GOLD Koopman least squares...")
+    print("\n[1/4] GOLD Koopman least squares...")
     A_ls, B_ls = identify_koopman_least_squares(Z, U, Z_next)
     print(f"  done in {time.perf_counter() - stage_start:.3f} s")
 
     stage_start = time.perf_counter()
-    print("[2/3] Koopman with classical Lyapunov condition, P = I...")
+    print("[2/4] GOLD Koopman soft constraint (lambda=500)...")
+    A_soft, B_soft, gamma_soft, status_soft, objective_soft = (
+        identify_koopman_soft_gold(Z, U, Z_next)
+    )
+    print(f"  done in {time.perf_counter() - stage_start:.3f} s")
+
+    stage_start = time.perf_counter()
+    print("[3/4] Koopman with hard Lyapunov condition, P = I...")
     A_identity, B_identity, status_identity, objective_identity = (
         identify_koopman_p_identity(Z, U, Z_next)
     )
     print(f"  done in {time.perf_counter() - stage_start:.3f} s")
 
     stage_start = time.perf_counter()
-    print("[3/3] Koopman with variable P + Schur/Lyapunov LMI...")
+    print("[4/4] Koopman with variable P + Schur/Lyapunov LMI...")
     A_p, B_p, P_p, status_p, objective_p = identify_koopman_variable_p(
         Z,
         U,
@@ -659,6 +712,7 @@ def main():
     t_test, x0_test, U_test, X_real = build_test_trajectory()
 
     Z_ls = simulate_identified_model(A_ls, B_ls, x0_test, U_test)
+    Z_soft = simulate_identified_model(A_soft, B_soft, x0_test, U_test)
     Z_identity = simulate_identified_model(
         A_identity,
         B_identity,
@@ -669,6 +723,7 @@ def main():
 
     models = [
         ("Koopman LS (GOLD)", A_ls, B_ls, Z_ls),
+        ("Koopman soft (GOLD)", A_soft, B_soft, Z_soft),
         ("Koopman P=I", A_identity, B_identity, Z_identity),
         ("Koopman variable P", A_p, B_p, Z_p),
     ]
@@ -712,8 +767,14 @@ def main():
         torch.max(p_eigs) / torch.min(p_eigs)
     ).item()
 
-    print("\nLMI verification")
-    print("----------------")
+    print("\nConstraint / solver verification")
+    print("--------------------------------")
+    print(f"Soft GOLD solver status:           {status_soft}")
+    print(f"Soft GOLD objective:               {objective_soft:.6e}")
+    print(f"Soft GOLD gamma:                   {gamma_soft:.6e}")
+    print(f"Soft GOLD ||A||2:                  {spectral_norm(A_soft):.6e}")
+    print(f"Soft GOLD gamma-||A||2:            {gamma_soft - spectral_norm(A_soft):.6e}")
+    print()
     print(f"P=I solver status:                 {status_identity}")
     print(f"P=I optimization objective:        {objective_identity:.6e}")
     print(
@@ -741,6 +802,7 @@ def main():
         X_real,
         [
             ("Koopman LS (GOLD)", Z_ls),
+            ("Koopman soft (GOLD)", Z_soft),
             ("Koopman P=I", Z_identity),
             ("Koopman variable P", Z_p),
         ],
