@@ -16,7 +16,8 @@ T = 10.0
 N = int(T / dt)
 delta = 2.0
 threshold = 0.1
-process_noise = 0.5
+process_noise = 0.05
+parsimony_weight = 1e-4
 noise_levels = [0.01, 0.03, 0.05, 0.10]
 
 # Duffing oscillator dynamics, used only to simulate the plant
@@ -50,19 +51,19 @@ def reconstruct_x1(y, x10):
 # SINDy library containing the true nonlinear structure
 def structured_library(x1, y, u):
     s = x1 + y
-    return torch.column_stack([
+    return torch.stack([
         torch.ones_like(y),
         x1,
         y,
         u,
         torch.cos(s),
         x1 * torch.cos(s),
-    ])
+    ], dim=-1)
 
 # SINDy library without the true nonlinear term
 def blind_library(x1, y, u):
     s = x1 + y
-    return torch.column_stack([
+    return torch.stack([
         torch.ones_like(y),
         y,
         u,
@@ -72,7 +73,7 @@ def blind_library(x1, y, u):
         torch.sin(s),
         torch.cos(s),
         x1 * torch.sin(s),
-    ])
+    ], dim=-1)
 
 # Sequential thresholded least squares
 def sindy(theta, target):
@@ -86,25 +87,49 @@ def sindy(theta, target):
         xi = new_xi
     return xi
 
+# Simulation of the identified SINDy model
+def simulate_sindy(x, u, xi, library):
+    X = [x]
+
+    for uk in u:
+        dx2 = library(x[0], x[1], uk) @ xi
+        x = x + dt * torch.stack([x[1], dx2])
+
+        if not torch.all(torch.isfinite(x)) or torch.max(torch.abs(x)) > 10:
+            x = torch.full_like(x, float("nan"))
+
+        X.append(x)
+
+    return torch.stack(X)
+
 # SINDy identification and hidden-state reconstruction
 def identify(y, u, library):
-    dy = (y[1:] - y[:-1]) / dt
-    y_mid = 0.5 * (y[:-1] + y[1:])
+    dy = (y[2:] - y[:-2]) / (2.0 * dt)
     best = None
 
     for x10 in torch.linspace(-3.0, 3.0, 101):
         x1 = reconstruct_x1(y, x10)
-        x1_mid = 0.5 * (x1[:-1] + x1[1:])
-        theta = library(x1_mid, y_mid, u)
+        theta = library(x1[1:-1], y[1:-1], u[1:])
         xi = sindy(theta, dy)
+
         error = torch.mean((theta @ xi - dy) ** 2)
+        score = error + parsimony_weight * torch.sum(torch.abs(xi))
 
-        if best is None or error < best[0]:
-            best = (error, x10, xi)
+        if best is None or score < best[0]:
+            best = (score, x10, xi)
 
-    return best[1], reconstruct_x1(y, best[1]), best[2]
+    x10_hat, xi = best[1], best[2]
+    x1_hat = reconstruct_x1(y, x10_hat)
+    X_sindy = simulate_sindy(
+        torch.stack([x10_hat, y[0]]),
+        u,
+        xi,
+        library,
+    )
 
-# Real trajectory with 5% process disturbance
+    return x10_hat, x1_hat, xi, X_sindy
+
+# Real trajectory with process disturbance
 x0 = torch.tensor([-0.6, 1.4])
 U = 0.8 * torch.sin(torch.arange(N) * 0.2)
 W = process_noise * torch.randn(N)
@@ -125,17 +150,15 @@ structured_results = {}
 blind_results = {}
 
 for noise, Y in measurements.items():
-    x10_hat, x1_hat, xi = identify(Y, U, structured_library)
-    structured_results[noise] = (x10_hat, x1_hat, xi)
-
-    x10_hat, x1_hat, xi = identify(Y, U, blind_library)
-    blind_results[noise] = (x10_hat, x1_hat, xi)
+    structured_results[noise] = identify(Y, U, structured_library)
+    blind_results[noise] = identify(Y, U, blind_library)
 
 # State reconstruction errors
-print("\n" + "=" * 72)
+print("\n" + "=" * 84)
 print("DUFFING - SINDY WITH DISTURBANCES")
-print("=" * 72)
-print("Noise    Structured RMSE x1    Blind RMSE x1")
+print("=" * 84)
+print("Noise    Structured x1(0)    Structured RMSE    Blind x1(0)    Blind RMSE")
+
 for noise in noise_levels:
     structured_rmse = torch.sqrt(torch.mean(
         (structured_results[noise][1] - X_true[:, 0])**2
@@ -143,8 +166,16 @@ for noise in noise_levels:
     blind_rmse = torch.sqrt(torch.mean(
         (blind_results[noise][1] - X_true[:, 0])**2
     ))
-    print(f"{100 * noise:>4.0f}%      {structured_rmse.item():>12.6f}       {blind_rmse.item():>12.6f}")
-print("=" * 72)
+
+    print(
+        f"{100 * noise:>4.0f}%"
+        f"{structured_results[noise][0].item():>19.4f}"
+        f"{structured_rmse.item():>19.6f}"
+        f"{blind_results[noise][0].item():>15.4f}"
+        f"{blind_rmse.item():>14.6f}"
+    )
+
+print("=" * 84)
 
 # Identified equations for the 5% measurement-noise case
 structured_names = [
@@ -162,16 +193,18 @@ for title, result, names in [
     print(f"\n{title} - 5% measurement noise")
     print(f"Estimated x1(0): {result[0].item():.4f}")
     print("dot{y} =")
+
     for name, coefficient in zip(names, result[2]):
         if abs(coefficient) >= threshold:
             print(f"  {coefficient.item():+.6f} * {name}")
 
-# Comparison of the real and reconstructed states
+# Comparison of the real, measured and identified states
 t = torch.arange(N + 1) * dt
 
 def plot_result(noise, results, title):
     Y = measurements[noise]
     x1_hat = results[noise][1]
+    X_sindy = results[noise][3]
 
     plt.figure(figsize=(12, 5))
 
@@ -187,7 +220,8 @@ def plot_result(noise, results, title):
     plt.subplot(1, 2, 2)
     plt.plot(t.numpy(), X_true[:, 1].numpy(), label="Real x2")
     plt.plot(t.numpy(), Y.numpy(), "--", label="Measured y")
-    plt.title(f"{title} - measured state x2 - {100 * noise:.0f}% noise")
+    plt.plot(t.numpy(), X_sindy[:, 1].numpy(), ":", label="SINDy model")
+    plt.title(f"{title} - state x2 - {100 * noise:.0f}% noise")
     plt.xlabel("Time [s]")
     plt.ylabel("x2")
     plt.grid()
