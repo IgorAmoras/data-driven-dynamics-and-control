@@ -1,127 +1,150 @@
-# Descobertas — identificação entrada-saída, SINDy e reconstrução de estado
+# Descobertas — SINDy, Koopman e reconstrução de estado
 
 **Data:** 17/09/2026
 
-## Contexto
+## O que estamos tentando resolver
 
-A linha de trabalho começou a partir da baseline de Koopman no Duffing:
+A baseline usa o sistema de Duffing:
 
-\[
-\dot{x}_1 = x_2
-\]
+```text
+dx1/dt = x2
+dx2/dt = -2*x2 - x1*cos(x1 + x2) + u
+```
 
-\[
-\dot{x}_2 = -2x_2 - x_1\cos(x_1+x_2) + u
-\]
+Primeiro foi feita identificação com estado completo.
 
-Primeiro foi feita identificação com estado completo. Depois foi criada uma versão entrada-saída, medindo apenas
+Depois foi criada uma versão entrada-saída, medindo apenas:
 
-\[
-y = x_2
-\]
+```text
+y = x2
+```
 
-e usando atrasos de \(y\) e \(u\) no lifting de Koopman.
+e usando atrasos de `y` e `u` no lifting de Koopman.
 
-## Limitação percebida no Koopman entrada-saída
+O problema apareceu aqui: o Koopman entrada-saída consegue criar um estado interno útil para previsão, mas esse estado não precisa ter correspondência direta com o estado físico oculto `x1`.
 
-O modelo entrada-saída consegue prever a dinâmica usando estados construídos a partir de atrasos, mas essas coordenadas não têm necessariamente correspondência com os estados físicos internos.
+Ou seja:
 
-Por isso, aplicar um observador diretamente nesse espaço aumentado não garante a reconstrução de um estado físico específico, como \(x_1\). Uma realização interna pode representar corretamente a entrada-saída sem que nenhuma coordenada seja exatamente o estado físico oculto.
+> prever bem a saída não significa necessariamente reconstruir corretamente o estado físico interno.
 
-A partir disso, a direção passou a ser:
+---
 
-- usar a física conhecida para definir o significado de algumas coordenadas;
-- usar os dados para identificar a parte desconhecida da dinâmica.
+## Mudança de direção
 
-## Escolha do experimento no Duffing
+A ideia passou a ser separar duas coisas:
 
-Foi mantido:
+- **a física conhecida define o significado do estado**;
+- **os dados identificam a parte desconhecida da dinâmica**.
 
-\[
-y = x_2
-\]
+No Duffing:
 
-como saída medida e \(x_1\) como estado oculto.
+- saída medida: `y = x2`
+- estado oculto: `x1`
 
 A única física fornecida ao identificador é:
 
-\[
-\dot{x}_1 = y
-\]
+```text
+dx1/dt = y
+```
 
 A segunda equação não é fornecida.
 
-Como
+Como:
 
-\[
-\dot{x}_1 = y
-\]
+```text
+dx1/dt = y
+```
 
-então
+então:
 
-\[
-x_1(t) = x_1(0) + \int_0^t y(\tau)\,d\tau
-\]
+```text
+x1(t) = x1(0) + integral(y dt)
+```
 
-Isso significa que a forma temporal de \(x_1\) pode ser reconstruída a partir de \(y\), mas existe uma ambiguidade em \(x_1(0)\). O problema de realização do estado passa a ser, em grande parte, encontrar esse offset inicial.
+Isso significa que a forma temporal de `x1` pode ser reconstruída a partir de `y`, mas ainda existe uma ambiguidade no valor inicial `x1(0)`.
 
-## Por que SINDy
+Na prática, o principal problema passa a ser encontrar esse offset inicial.
+
+---
+
+## Por que usamos SINDy
 
 SINDy foi usado para aprender a parte desconhecida da dinâmica.
 
-A ideia central é montar uma biblioteca de funções candidatas, por exemplo:
+Uma biblioteca simples pode ser:
 
-\[
-\Theta =
-\left[
-1,\;
-x_1,\;
-y,\;
-u,\;
-\cos(x_1+y),\;
-x_1\cos(x_1+y)
-\right]
-\]
+```text
+Theta = [
+    1,
+    x1,
+    y,
+    u,
+    cos(x1 + y),
+    x1*cos(x1 + y)
+]
+```
 
-e escrever:
+O modelo é escrito como:
 
-\[
-\dot{y} = \Theta \xi
-\]
+```text
+dy/dt = Theta * xi
+```
 
-As funções da biblioteca podem ser não lineares nos estados, mas a regressão é linear nos coeficientes \(\xi\).
+A biblioteca pode conter funções não lineares, mas a regressão continua linear nos coeficientes `xi`.
 
-A não linearidade está nas colunas de \(\Theta\); o SINDy procura apenas os coeficientes que combinam essas funções.
+Essa é a ideia principal do SINDy:
 
-## STLSQ
+- colocar possíveis não linearidades na biblioteca;
+- estimar os coeficientes por regressão;
+- eliminar termos que não parecem relevantes.
 
-Foi usada uma implementação simples de **Sequential Thresholded Least Squares**.
+---
+
+## Como funciona o STLSQ
+
+Foi usada uma implementação simples de **Sequential Thresholded Least Squares (STLSQ)**.
 
 O processo é:
 
-1. resolver mínimos quadrados usando toda a biblioteca;
-2. eliminar coeficientes com módulo abaixo de um threshold;
-3. refazer os mínimos quadrados apenas com os termos sobreviventes;
+1. fazer mínimos quadrados usando toda a biblioteca;
+2. remover coeficientes menores que um threshold;
+3. refazer os mínimos quadrados somente com os termos restantes;
 4. repetir até estabilizar.
 
-O objetivo é obter uma equação esparsa e interpretável, evitando muitos termos pequenos usados apenas para melhorar marginalmente o ajuste.
+Objetivo:
 
-## Primeiro experimento — sem ruído
+- manter poucos termos;
+- evitar uma equação cheia de coeficientes pequenos;
+- obter uma dinâmica mais simples e interpretável.
 
-Para cada candidato de \(x_1(0)\):
+---
 
-1. \(x_1\) foi reconstruído pela integral de \(y\);
-2. o SINDy identificou a dinâmica de \(y\);
+## Primeiro teste — sem ruído
+
+Para cada candidato de `x1(0)`:
+
+1. `x1` foi reconstruído pela integral de `y`;
+2. o SINDy identificou a dinâmica de `y`;
 3. foi calculado o erro do modelo;
 4. o candidato com menor erro foi escolhido.
 
-Sem ruído, o método encontrou corretamente \(x_1(0)\) e a trajetória estimada de \(x_1\) coincidiu praticamente com a real.
+### Resultado
 
-O estado verdadeiro \(x_1\) não foi usado na identificação, apenas na avaliação final.
+Sem ruído:
 
-Esse primeiro teste mostrou que, com física parcial correta, dados limpos e uma biblioteca contendo a estrutura adequada, é possível recuperar um estado físico oculto sem fornecer sua trajetória ao identificador.
+- o valor correto de `x1(0)` foi encontrado;
+- a trajetória estimada de `x1` coincidiu praticamente com a real;
+- o estado verdadeiro `x1` não foi usado na identificação, apenas na validação.
 
-## Experimentos com perturbações
+Esse teste mostrou que a ideia funciona em um caso ideal quando:
+
+- a física parcial está correta;
+- os dados estão limpos;
+- a biblioteca contém uma estrutura adequada.
+
+---
+
+## Testes com perturbações
 
 Depois foram adicionados:
 
@@ -134,130 +157,204 @@ Depois foram adicionados:
 
 Contém o termo verdadeiro:
 
-\[
-x_1\cos(x_1+y)
-\]
+```text
+x1*cos(x1 + y)
+```
 
-entre os candidatos.
+A intenção é testar o caso em que temos uma boa hipótese sobre a estrutura da dinâmica.
 
 ### Blind library
 
-Não contém o termo verdadeiro e oferece outras funções plausíveis, para verificar como o SINDy se comporta quando a biblioteca está incompleta.
+Não contém o termo verdadeiro.
 
-## Achados com ruído
+A intenção é verificar o que acontece quando a biblioteca está incompleta e o SINDy precisa aproximar a dinâmica usando termos errados ou apenas parcialmente adequados.
 
-A reconstrução de \(x_1\) frequentemente manteve a forma correta, mas com offset errado.
+---
 
-Isso acontece porque a integração de \(y\) reconstrói bem a variação de \(x_1\), enquanto \(x_1(0)\) continua livre.
+## O que funcionou
 
-Em vários testes, o RMSE de \(x_1\) ficou praticamente igual ao erro em \(x_1(0)\).
+Mesmo com perturbações, a reconstrução de `x1` frequentemente manteve a forma temporal correta.
 
-Também ficou claro que SINDy é sensível ao ruído quando \(\dot{y}\) é estimado numericamente.
+Isso acontece porque:
 
-A aproximação simples
+```text
+x1(t) = x1(0) + integral(y dt)
+```
 
-\[
-\dot{y}_k \approx \frac{y_{k+1}-y_k}{\Delta t}
-\]
+A integração preserva bem a evolução relativa de `x1`.
 
-amplifica ruído por aproximadamente \(1/\Delta t\).
+Também foi possível obter modelos SINDy que reproduziam razoavelmente `x2` em rollout, mesmo com ruído.
 
-Com
+Isso mostrou que o método ainda consegue capturar parte importante da dinâmica observável.
 
-\[
-\Delta t = 0{,}01
-\]
+---
 
-esse fator é 100.
+## O que começou a quebrar
 
-A integração usada para reconstruir \(x_1\) tem o comportamento oposto e tende a suavizar o ruído. Por isso foi possível observar casos em que a forma de \(x_1\) estava correta, mas o estado inteiro estava deslocado devido à escolha errada de \(x_1(0)\).
+O maior problema foi a identificação de `x1(0)`.
 
-## Compensação do ruído pelo modelo
+Em muitos casos:
 
-Um achado importante foi que o SINDy consegue compensar uma realização de estado ruim alterando termos e coeficientes da equação.
+- a forma de `x1` estava correta;
+- mas toda a trajetória estava deslocada verticalmente;
+- o RMSE de `x1` ficava próximo do erro no offset inicial.
 
-Com ruído, a structured library chegou a escolher um \(x_1(0)\) incorreto e ainda produzir uma dinâmica que explicava razoavelmente a saída.
+Isso mostrou que a física conhecida determina bem a variação de `x1`, mas não fixa sua origem.
 
-Na blind library isso ficou ainda mais evidente: apareceram coeficientes muito grandes em vários termos. A regressão estava tentando compensar simultaneamente:
+---
 
-- ruído;
-- biblioteca incompleta;
-- estado deslocado;
-- perturbação de processo.
+## Sensibilidade ao ruído
 
-Portanto, um bom ajuste de saída não implica que a realização física do estado esteja correta.
+SINDy mostrou alta sensibilidade ao ruído principalmente por causa da estimação de `dy/dt`.
+
+A forma mais simples usada foi:
+
+```text
+dy/dt ≈ (y[k+1] - y[k]) / dt
+```
+
+Com:
+
+```text
+dt = 0.01
+```
+
+o ruído é amplificado aproximadamente por um fator de:
+
+```text
+1/dt = 100
+```
+
+A integração usada para reconstruir `x1` tem comportamento oposto e tende a suavizar ruído.
+
+Por isso apareceu uma situação recorrente:
+
+- a forma de `x1` parecia boa;
+- o SINDy escolhia um `x1(0)` errado;
+- a dinâmica identificada ainda conseguia explicar parte da saída.
+
+---
+
+## Compensação do erro pelo próprio SINDy
+
+Esse foi um dos principais achados.
+
+O SINDy consegue compensar uma realização ruim do estado ajustando outros termos e coeficientes da equação.
+
+Na structured library, mesmo com `x1(0)` errado, o método conseguiu encontrar combinações de termos que explicavam razoavelmente a saída.
+
+Na blind library isso ficou ainda mais claro:
+
+- apareceram coeficientes muito grandes;
+- vários termos passaram a ser usados simultaneamente;
+- a regressão tentou compensar ruído, biblioteca incompleta, estado deslocado e perturbação de processo ao mesmo tempo.
+
+### Conclusão
+
+> um bom ajuste de saída não garante que o estado físico interno esteja correto.
+
+---
 
 ## Rollout do modelo identificado
 
-Foi adicionada a simulação do modelo SINDy identificado para comparar:
+Foi adicionada a simulação do modelo SINDy encontrado.
 
-- \(x_2\) real;
-- medição ruidosa \(y\);
+Os gráficos passaram a comparar:
+
+- `x2` real;
+- medição ruidosa `y`;
 - saída do modelo SINDy.
 
-Em alguns casos o rollout de \(x_2\) permaneceu razoável mesmo quando \(x_1\) estava mal reconstruído.
+Em alguns casos o rollout de `x2` permaneceu razoável mesmo quando `x1` estava claramente errado.
 
-Esse resultado separa duas perguntas diferentes:
+Isso separou duas perguntas:
 
 1. o modelo consegue reproduzir a saída?
-2. o modelo recupera corretamente o estado físico interno?
+2. o modelo recupera corretamente o estado físico?
 
-O primeiro problema pode estar relativamente bem resolvido enquanto o segundo continua ambíguo.
+Esses dois objetivos não são equivalentes.
 
-## Tentativas para melhorar \(x_1(0)\)
+---
+
+## Tentativas de melhorar x1(0)
 
 Foram testadas duas mudanças simples:
 
-- diferença central para estimar \(\dot{y}\);
-- penalização de parcimônia na escolha de \(x_1(0)\), usando erro de ajuste mais um termo proporcional à norma \(L_1\) dos coeficientes.
+- diferença central para estimar `dy/dt`;
+- penalização de parcimônia na escolha de `x1(0)`.
 
-A intenção da penalização foi evitar que um estado inicial ruim fosse compensado por uma equação excessivamente complexa.
+O score passou a considerar:
 
-Essas mudanças melhoraram a análise, mas não eliminaram a ambiguidade do estado inicial.
+```text
+erro de ajuste + penalização da complexidade dos coeficientes
+```
 
-## Principal conclusão até agora
+A ideia foi evitar que um `x1(0)` ruim fosse compensado por uma equação excessivamente complexa.
+
+### Resultado
+
+A análise ficou melhor, mas a ambiguidade do estado inicial não foi eliminada.
+
+---
+
+## Principal conclusão
 
 A dificuldade não é apenas o ruído.
 
 Existe um problema de **identificabilidade da realização física**.
 
-A relação
+A relação:
 
-\[
-\dot{x}_1 = y
-\]
+```text
+dx1/dt = y
+```
 
-determina \(x_1\) apenas até uma constante.
+determina `x1` apenas até uma constante.
 
-O SINDy pode ajustar seus coeficientes para acomodar diferentes valores dessa constante, principalmente quando há ruído ou quando a biblioteca é flexível ou incompleta.
+O SINDy pode ajustar os coeficientes da dinâmica para acomodar diferentes valores desse offset, principalmente quando:
 
-Assim, reconstruir um estado físico oculto exige mais do que reproduzir bem a entrada-saída.
+- há ruído;
+- a biblioteca é muito flexível;
+- a biblioteca está incompleta.
 
-## Próximas ideias
+Por isso:
 
-Ainda não implementadas:
+> reconstruir um estado físico oculto exige mais do que reproduzir bem a entrada-saída.
 
-- escolher \(x_1(0)\) pelo erro de rollout da saída, em vez do erro local em \(\dot{y}\);
+---
+
+## Próximos passos
+
+Ainda não implementados:
+
+- escolher `x1(0)` pelo erro de rollout da saída, e não apenas pelo erro local em `dy/dt`;
 - melhorar a estimação de derivadas;
-- testar weak/integral SINDy para evitar diferenciação direta de sinais ruidosos;
+- testar **weak / integral SINDy** para evitar diferenciação direta de sinais ruidosos;
 - usar várias trajetórias com diferentes estados iniciais e uma única dinâmica comum;
-- testar calibrações físicas esparsas de \(x_1\) para quebrar a ambiguidade de offset;
-- usar os termos encontrados pelo SINDy para orientar posteriormente um lifting Koopman mais interpretável e orientado a controle.
+- testar calibrações físicas esparsas de `x1` para quebrar a ambiguidade de offset;
+- usar os termos encontrados pelo SINDy para orientar depois um lifting Koopman mais interpretável e orientado a controle.
 
-## Interpretação geral
+---
 
-O caminho que apareceu até aqui é:
+## Resumo geral
 
-\[
-\text{entrada-saída}
-\rightarrow
-\text{física parcial}
-\rightarrow
-\text{reconstrução de estado candidato}
-\rightarrow
-\text{SINDy}
-\rightarrow
-\text{modelo não linear identificado}
-\]
+O caminho construído até aqui foi:
 
-O principal aprendizado foi separar claramente **previsão de saída** de **realização física do estado**. Um modelo pode explicar muito bem a saída e ainda assim representar incorretamente o estado físico oculto.
+```text
+entrada-saída
+    ↓
+física parcial
+    ↓
+reconstrução de estado candidato
+    ↓
+SINDy
+    ↓
+modelo não linear identificado
+```
+
+O principal aprendizado até agora foi separar claramente:
+
+- **previsão de saída**
+- **realização física do estado**
+
+Um modelo pode explicar muito bem a saída e ainda assim representar incorretamente o estado físico oculto.
