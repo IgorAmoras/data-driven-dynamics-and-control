@@ -16,7 +16,7 @@ T = 10.0
 N = int(T / dt)
 delta = 2.0
 threshold = 0.1
-process_noise = 0.05
+process_noise = 0.5
 parsimony_weight = 1e-4
 noise_levels = [0.01, 0.03, 0.05, 0.10]
 
@@ -234,10 +234,10 @@ def plot_result(noise, results, title):
 plot_result(0.01, structured_results, "Structured SINDy")
 # plot_result(0.03, structured_results, "Structured SINDy")
 # plot_result(0.05, structured_results, "Structured SINDy")
-# plot_result(0.10, structured_results, "Structured SINDy")
+plot_result(0.10, structured_results, "Structured SINDy")
 
 # Blind library
-# plot_result(0.01, blind_results, "Blind SINDy")
+plot_result(0.01, blind_results, "Blind SINDy")
 # plot_result(0.03, blind_results, "Blind SINDy")
 # plot_result(0.05, blind_results, "Blind SINDy")
-# plot_result(0.10, blind_results, "Blind SINDy")
+plot_result(0.10, blind_results, "Blind SINDy")
