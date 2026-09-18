@@ -16,7 +16,7 @@ T = 10.0
 N = int(T / dt)
 delta = 2.0
 threshold = 0.1
-process_noise = 0.05
+process_noise = 0.5
 noise_levels = [0.01, 0.03, 0.05, 0.10]
 
 # Duffing oscillator dynamics, used only to simulate the plant
@@ -45,6 +45,8 @@ def reconstruct_x1(y, x10):
     )
     return x1
 
+# Given that the physics is known, we can use basis physics, and the enhance with other candidates to explain
+# Drawback is that the sindy WILL try to identify noise and disturbances as part of the dynamics, so it will be hard to identify the true dynamics if the noise is too high
 # SINDy library containing the true nonlinear structure
 def structured_library(x1, y, u):
     s = x1 + y
@@ -90,7 +92,7 @@ def identify(y, u, library):
     y_mid = 0.5 * (y[:-1] + y[1:])
     best = None
 
-    for x10 in torch.linspace(-1.0, 1.0, 101):
+    for x10 in torch.linspace(-3.0, 3.0, 101):
         x1 = reconstruct_x1(y, x10)
         x1_mid = 0.5 * (x1[:-1] + x1[1:])
         theta = library(x1_mid, y_mid, u)
@@ -195,13 +197,13 @@ def plot_result(noise, results, title):
     plt.show()
 
 # Structured library
-# plot_result(0.01, structured_results, "Structured SINDy")
+plot_result(0.01, structured_results, "Structured SINDy")
 # plot_result(0.03, structured_results, "Structured SINDy")
-plot_result(0.05, structured_results, "Structured SINDy")
+# plot_result(0.05, structured_results, "Structured SINDy")
 # plot_result(0.10, structured_results, "Structured SINDy")
 
 # Blind library
 # plot_result(0.01, blind_results, "Blind SINDy")
 # plot_result(0.03, blind_results, "Blind SINDy")
-plot_result(0.05, blind_results, "Blind SINDy")
+# plot_result(0.05, blind_results, "Blind SINDy")
 # plot_result(0.10, blind_results, "Blind SINDy")
