@@ -374,8 +374,13 @@ def identify_koopman_variable_p(Z, U, Z_next):
 
     A = torch.tensor(A_np, dtype=torch.float64)
     B = torch.tensor(B_np, dtype=torch.float64)
-    P_torch = torch.tensor(P.value, dtype=torch.float64)
-
+    P_np = (
+        P.value.toarray()
+        if hasattr(P.value, "toarray")
+        else np.asarray(P.value)
+    )
+    
+    P_torch = torch.tensor(P_np, dtype=torch.float64)
     return A, B, P_torch, problem.status, problem.value
 
 
