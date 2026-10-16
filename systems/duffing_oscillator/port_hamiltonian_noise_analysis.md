@@ -6,19 +6,19 @@ Estudar a robustez do identificador PH-1 paramétrico do arquivo port_hamiltonia
 
 A planta de referência é:
 
-[
-dot q=p,qquad dot p=-2p-qcos(q+p)+u+w,qquad y=p+v.
-]
+\[
+\dot q=p,\qquad \dot p=-2p-q\cos(q+p)+u+w,\qquad y=p+v.
+\]
 
 O modelo PH mantém J canônico e G=[0,1]^T, aprendendo três coeficientes positivos (a, r0, r1) de:
 
-[
-H_a(q,p)=p^2/2+a[qsin q+cos q-1],
-]
+\[
+H_a(q,p)=p^2/2+a[q\sin q+\cos q-1],
+\]
 
-[
-R(q,p)=operatorname{diag}(0,r_0+r_1[1-qsin(q+p/2)operatorname{sinc}(p/2)]).
-]
+\[
+R(q,p)=\operatorname{diag}(0,r_0+r_1[1-q\sin(q+p/2)\operatorname{sinc}(p/2)]).
+\]
 
 O valor verdadeiro é a=r0=r1=1. A identidade trigonométrica 2 sin(p/2) sin(q+p/2)=cos(q)-cos(q+p) demonstra que a representação de referência reproduz exatamente a planta não perturbada. Para |q|<=1 e coeficientes não negativos, R é semidefinida positiva. Esta é uma **garantia local de estrutura**, não uma prova de estabilidade assintótica.
 
