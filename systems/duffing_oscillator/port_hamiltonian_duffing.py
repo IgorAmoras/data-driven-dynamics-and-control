@@ -1,15 +1,13 @@
-"""Port-Hamiltonian identification of the repository's modified Duffing system.
+"""Didactic Port-Hamiltonian identification of the modified Duffing system.
 
-Self-contained educational benchmark matching the repository's Duffing dynamics.
-Stage PH-1: canonical J, known G, learn a scalar Hamiltonian coefficient
-and two coefficients of positive dissipation on |q| <= 1.
+The PH structure J, G, H and R is known up to three coefficients (a, r0, r1).
+We estimate these coefficients directly from data by least squares, without
+neural networks, Adam or gradient-based training.
 """
 
 from pathlib import Path
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
 # 1) Same benchmark as classic_koopman.py
@@ -57,44 +55,59 @@ def reference_ph_dynamics(x, u):
     return torch.stack((h_p, -h_q - r * h_p + u), dim=-1)
 
 
-# 3) Identification: learn unknown H and R parameters, but preserve structure.
-# H_theta = p^2/2 + a * V0(q)
-# R_theta = diag(0, r0 + r1*[1 - q*sin(q+p/2)*sinc(p/2)])
-# a, r0, r1 >= 0 are imposed by softplus.
-# When |q| <= 1, the bracket is nonnegative, so R_theta >= 0.
-# The true parameters are a = r0 = r1 = 1.
+# 3) Regression from the PH equation:
+# p_dot - u = -a*q*cos(q) - r0*p - r1*(1-D(q,p))*p.
+# For known (q,p,u,p_dot), this is LINEAR in theta = [a, r0, r1].
+# Enforce theta >= 0 to keep dissipation nonnegative on |q| <= 1.
+def ph_features(x):
+    q, p = x.unbind(-1)
+    D = q * torch.sin(q + p / 2.0) * sinc_half(p)
+    return torch.stack((-q * torch.cos(q), -p, -(1.0 - D) * p), dim=-1)
 
-class ParametricPH(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.raw_a = nn.Parameter(torch.tensor(0.0))
-        self.raw_r0 = nn.Parameter(torch.tensor(0.0))
-        self.raw_r1 = nn.Parameter(torch.tensor(0.0))
 
-    def coefficients(self):
-        return F.softplus(self.raw_a), F.softplus(self.raw_r0), F.softplus(self.raw_r1)
+def fit_nonnegative_lstsq(features, target):
+    """Minimize ||features @ theta - target||^2 with theta >= 0.
 
-    def energy(self, x):
-        q, p = x.unbind(-1)
-        a, _, _ = self.coefficients()
-        potential_shape = q * torch.sin(q) + torch.cos(q) - 1.0
-        return 0.5 * p.square() + a * potential_shape
+    Only three parameters: test the 8 possible active subsets (including zero).
+    Each candidate is an ordinary least-squares solve with torch.linalg.lstsq.
+    """
+    best_coefficients = torch.zeros(3, dtype=features.dtype, device=features.device)
+    best_loss = torch.mean(target.square()).item()
 
-    def dissipation(self, x):
-        q, p = x.unbind(-1)
-        _, r0, r1 = self.coefficients()
-        return r0 + r1 * (1.0 - q * torch.sin(q + p / 2.0) * sinc_half(p))
+    for mask in range(1, 8):
+        active = [j for j in range(3) if mask & (1 << j)]
+        solution = torch.linalg.lstsq(features[:, active], target).solution
+        if torch.any(solution < -1e-10):
+            continue  # Physical constraint: coefficients cannot be negative.
 
-    def forward(self, x, u):
-        # Autograd differentiates the *learned Hamiltonian* w.r.t. its states.
-        x = x.detach().requires_grad_(True)
-        grad_H = torch.autograd.grad(
-            self.energy(x).sum(), x, create_graph=self.training
-        )[0]
-        H_q, H_p = grad_H.unbind(-1)
-        r = self.dissipation(x)
-        # (J - R) @ grad(H) + G*u, written component-by-component
-        return torch.stack((H_p, -H_q - r * H_p + u), dim=-1)
+        coefficients = torch.zeros_like(best_coefficients)
+        coefficients[active] = solution.clamp(min=0.0)
+        loss = torch.mean((features @ coefficients - target).square()).item()
+        if loss < best_loss:
+            best_loss, best_coefficients = loss, coefficients
+
+    return best_coefficients, best_loss
+
+
+def ph_energy(x, coefficients):
+    q, p = x.unbind(-1)
+    a, _, _ = coefficients
+    return 0.5 * p.square() + a * (q * torch.sin(q) + torch.cos(q) - 1.0)
+
+
+def ph_dissipation(x, coefficients):
+    q, p = x.unbind(-1)
+    _, r0, r1 = coefficients
+    D = q * torch.sin(q + p / 2.0) * sinc_half(p)
+    return r0 + r1 * (1.0 - D)
+
+
+def ph_dynamics(x, u, coefficients):
+    # grad H = [a*q*cos(q), p]. J is canonical and R = diag(0, r).
+    q, p = x.unbind(-1)
+    a, _, _ = coefficients
+    r = ph_dissipation(x, coefficients)
+    return torch.stack((p, -a * q * torch.cos(q) - r * p + u), dim=-1)
 
 
 def rk4_step(field, x, u, dt=DT):
@@ -114,33 +127,25 @@ def main():
     print(f"Exact local PH decomposition: max vector-field error = {mismatch.item():.3e}")
     print(f"Reference R minimum on samples = {reference_dissipation(x_check).min().item():.6f}")
 
-    # B) Learn from state, input and known derivatives (an intentionally simple first test).
+    # B) Identify theta from measured data. Here derivatives are exact.
     x_train = -1.0 + 2.0 * torch.rand(3000, 2)
     u_train = -1.0 + 2.0 * torch.rand(3000)
     xdot_train = true_dynamics(x_train, u_train)
 
-    model = ParametricPH()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.06)
-    for epoch in range(401):
-        model.train()
-        optimizer.zero_grad()
-        prediction = model(x_train, u_train)
-        loss = torch.mean((prediction - xdot_train).square())
-        loss.backward()
-        optimizer.step()
-        if epoch % 100 == 0:
-            print(f"epoch {epoch:3d} | derivative MSE: {loss.item():.4e}")
+    features = ph_features(x_train)
+    target = xdot_train[:, 1] - u_train  # Y = p_dot - u
+    coefficients, train_mse = fit_nonnegative_lstsq(features, target)
+    a, r0, r1 = coefficients
 
-    a, r0, r1 = model.coefficients()
+    print(f"Least-squares derivative MSE = {train_mse:.4e}")
     print(f"Identified: a={a.item():.6f}, r0={r0.item():.6f}, r1={r1.item():.6f}")
     print("Ground truth: a=1, r0=1, r1=1")
 
     # C) Shared hold-out test: one RK4 step and free trajectory rollout.
-    model.eval()
     x_test = -1.0 + 2.0 * torch.rand(500, 2)
     u_test = -1.0 + 2.0 * torch.rand(500)
     true_next = rk4_step(true_dynamics, x_test, u_test)
-    ph_next = rk4_step(model, x_test, u_test)
+    ph_next = rk4_step(lambda x, u: ph_dynamics(x, u, coefficients), x_test, u_test)
     print(f"Held-out one-step RMSE = {torch.mean((true_next - ph_next).square()).sqrt().item():.3e}")
 
     x0 = torch.tensor([-0.6, 1.4])  # same test initial state as existing Koopman code
@@ -150,7 +155,7 @@ def main():
     ph_states = [x0]
     for u in inputs:
         true_states.append(rk4_step(true_dynamics, true_states[-1], u).detach())
-        ph_states.append(rk4_step(model, ph_states[-1], u).detach())
+        ph_states.append(rk4_step(lambda x, u: ph_dynamics(x, u, coefficients), ph_states[-1], u).detach())
     true_states = torch.stack(true_states)
     ph_states = torch.stack(ph_states)
     rollout_rmse = torch.mean((true_states - ph_states).square()).sqrt()
