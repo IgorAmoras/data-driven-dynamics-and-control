@@ -11,8 +11,8 @@ import torch
 import matplotlib.pyplot as plt
 
 # 1) Same benchmark as classic_koopman.py
-# q_dot = p
-# p_dot = -2*p - q*cos(q+p) + u
+# dq/dt = p
+# dp/dt = -2*p - q*cos(q+p) + u
 
 torch.set_default_dtype(torch.float64)
 torch.manual_seed(156)
@@ -26,6 +26,8 @@ def true_dynamics(x, u):
 
 
 # 2) Exact local PH representation of the SAME dynamics
+# x=[q,p]^T, dx/dt=(J-R) grad_x H + G*u
+# partial H/partial q = a*q*cos(q), partial H/partial p = p.
 # H = p^2 / 2 + q*sin(q) + cos(q) - 1
 # J = [[0,1],[-1,0]], G = [0,1]^T
 # R = diag(0, r(q,p)), with r >= 2 - |q|.
@@ -56,8 +58,8 @@ def reference_ph_dynamics(x, u):
 
 
 # 3) Regression from the PH equation:
-# p_dot - u = -a*q*cos(q) - r0*p - r1*(1-D(q,p))*p.
-# For known (q,p,u,p_dot), this is LINEAR in theta = [a, r0, r1].
+# dp/dt - u = -a*q*cos(q) - r0*p - r1*(1-D(q,p))*p.
+# For known (q,p,u,dp/dt), this is LINEAR in theta = [a, r0, r1].
 # Enforce theta >= 0 to keep dissipation nonnegative on |q| <= 1.
 def ph_features(x):
     q, p = x.unbind(-1)
@@ -103,7 +105,8 @@ def ph_dissipation(x, coefficients):
 
 
 def ph_dynamics(x, u, coefficients):
-    # grad H = [a*q*cos(q), p]. J is canonical and R = diag(0, r).
+    # grad_x H = [partial H/partial q, partial H/partial p] = [a*q*cos(q), p].
+    # J is canonical and R = diag(0, r).
     q, p = x.unbind(-1)
     a, _, _ = coefficients
     r = ph_dissipation(x, coefficients)
@@ -127,13 +130,14 @@ def main():
     print(f"Exact local PH decomposition: max vector-field error = {mismatch.item():.3e}")
     print(f"Reference R minimum on samples = {reference_dissipation(x_check).min().item():.6f}")
 
-    # B) Identify theta from measured data. Here derivatives are exact.
+    # B) Identify theta from simulated data. The exact time derivatives
+    # dq/dt, dp/dt are evaluated using the known plant field.
     x_train = -1.0 + 2.0 * torch.rand(3000, 2)
     u_train = -1.0 + 2.0 * torch.rand(3000)
     xdot_train = true_dynamics(x_train, u_train)
 
     features = ph_features(x_train)
-    target = xdot_train[:, 1] - u_train  # Y = p_dot - u
+    target = xdot_train[:, 1] - u_train  # Y = dp/dt - u
     coefficients, train_mse = fit_nonnegative_lstsq(features, target)
     a, r0, r1 = coefficients
 
