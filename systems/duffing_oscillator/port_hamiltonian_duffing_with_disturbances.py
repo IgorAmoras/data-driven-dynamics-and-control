@@ -1,6 +1,6 @@
 """Port-Hamiltonian identification with measurement and process noise.
 
-Companion to port_hamiltonian_duffing_intro.py and SINDy_with_disturbances.py.
+Companion to port_hamiltonian_duffing.py and SINDy_with_disturbances.py.
 
 Same modified Duffing plant, input, RK4 step, process noise and measurement
 noise levels as the repository's noisy SINDy experiment:
@@ -10,8 +10,9 @@ noise levels as the repository's noisy SINDy experiment:
     y = p + v
 
 PH-1 is deliberately STRUCTURED: we know the functional form of H and R but
-not their three positive coefficients a, r0 and r1. This is not a neural PH
-model and should not be compared as if it had equal prior knowledge to SINDy.
+not their three positive coefficients a, r0 and r1. We identify them by
+nonnegative least squares, not gradient descent. This is not a neural PH model
+and should not be compared as if it had equal prior knowledge to SINDy.
 
 Measurements: only noisy y=p. We reconstruct q by integrating smoothed y,
 using the TRUE q(0) supplied to this test. SINDy searches for the hidden q(0),
@@ -32,7 +33,10 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 
-from port_hamiltonian_duffing import ParametricPH, true_dynamics, rk4_step, DT
+from port_hamiltonian_duffing import (
+    ph_features, fit_nonnegative_lstsq, ph_dynamics, ph_dissipation,
+    true_dynamics, rk4_step, DT,
+)
 
 # 1) Experimental configuration (same reference as noisy SINDy).
 torch.set_default_dtype(torch.float64)
@@ -44,7 +48,6 @@ NOISE_LEVELS = [0.01, 0.03, 0.05, 0.10]
 DIAGNOSTIC_NOISE_LEVEL = 0.0
 SAVGOL_WINDOW = 41   # odd; smoothing helps avoid amplifying sensor noise by /DT
 SAVGOL_DEGREE = 3
-EPOCHS = 600
 
 
 def disturbed_step(x, u, w):
@@ -77,39 +80,32 @@ def reconstruct_position(p_smooth, q0):
 
 
 def fit_ph(x_measured, u, p_dot_estimate, train_range):
-    """Fit only a,r0,r1; J, G and the PH architecture stay fixed."""
-    model = ParametricPH()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.04)
-    # Input u[k] is constant on [t_k,t_{k+1}); derivative at t_k for
-    # rapidly changing u is ambiguous. Use midpoint input as an approximation.
+    """Estimate a, r0, r1 from reconstructed states and measured acceleration.
+
+    With noisy data, Y = estimated(p_dot) - u and Phi uses estimated(q,p).
+    """
+    # Approximate input at the instants used by the smoothed derivative.
     u_at_samples = torch.cat((u[:1], 0.5 * (u[:-1] + u[1:]), u[-1:]))
-    for epoch in range(EPOCHS + 1):
-        model.train()
-        optimizer.zero_grad()
-        predicted = model(x_measured[train_range], u_at_samples[train_range])
-        # With full PH structure, q_dot = p by construction: fit p_dot only.
-        loss = torch.mean((predicted[:, 1] - p_dot_estimate[train_range]).square())
-        loss.backward()
-        optimizer.step()
-    model.eval()
-    return model, loss.item()
+    features = ph_features(x_measured[train_range])
+    target = p_dot_estimate[train_range] - u_at_samples[train_range]
+    return fit_nonnegative_lstsq(features, target)
 
 
-def clean_holdout_metrics(model, inputs):
+def clean_holdout_metrics(coefficients, inputs):
     """Noiseless out-of-sample test with a different input and initial state."""
     x0 = torch.tensor([0.4, -1.0])
     x_true = [x0]
     x_ph = [x0]
     for uk in inputs:
         x_true.append(rk4_step(true_dynamics, x_true[-1], uk).detach())
-        x_ph.append(rk4_step(model, x_ph[-1], uk).detach())
+        x_ph.append(rk4_step(lambda x, u: ph_dynamics(x, u, coefficients), x_ph[-1], uk).detach())
     true_states = torch.stack(x_true)
     predicted_states = torch.stack(x_ph)
     rollout_rmse = (true_states - predicted_states).square().mean().sqrt().item()
     next_true = torch.stack([
         rk4_step(true_dynamics, true_states[k], inputs[k]) for k in range(N)
     ])
-    next_predicted = rk4_step(model, true_states[:-1], inputs)
+    next_predicted = rk4_step(lambda x, u: ph_dynamics(x, u, coefficients), true_states[:-1], inputs)
     one_step_rmse = (next_true - next_predicted).square().mean().sqrt().item()
     return one_step_rmse, rollout_rmse, true_states, predicted_states
 
@@ -135,11 +131,11 @@ def main():
         p_smooth, p_dot_est, valid_range = measurement_and_derivative(y)
         q_est = reconstruct_position(p_smooth, x0[0])
         x_est = torch.stack((q_est, p_smooth), dim=-1)
-        model, train_mse = fit_ph(x_est, u, p_dot_est, valid_range)
-        a, r0, r1 = [v.item() for v in model.coefficients()]
-        one_step, rollout, true_clean, ph_clean = clean_holdout_metrics(model, u_test)
+        coefficients, train_mse = fit_ph(x_est, u, p_dot_est, valid_range)
+        a, r0, r1 = [v.item() for v in coefficients]
+        one_step, rollout, true_clean, ph_clean = clean_holdout_metrics(coefficients, u_test)
         q_rmse = (q_est - states[:, 0]).square().mean().sqrt().item()
-        r_min = model.dissipation(x_est).min().item()
+        r_min = ph_dissipation(x_est, coefficients).min().item()
         results.append({
             "noise": noise, "a": a, "r0": r0, "r1": r1,
             "train_mse": train_mse, "q_rmse": q_rmse,
@@ -153,6 +149,7 @@ def main():
     print("Sensor: y=p+v; process w ~ N(0, 0.5^2) each time step")
     print("True parameters: a=r0=r1=1; true q(0) provided to identifier")
     print("Measurements smoothed by local polynomial window=41, degree=3")
+    print("PH coefficients estimated by nonnegative least squares")
     print("q RMSE and train MSE use the noisy TRAINING trajectory.")
     print("One-step/rollout RMSE use a clean HOLDOUT: x0=(0.4,-1.0), different input.")
     print("=" * 109)
