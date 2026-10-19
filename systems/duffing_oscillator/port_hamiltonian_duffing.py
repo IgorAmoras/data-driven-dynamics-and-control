@@ -1,4 +1,4 @@
-"""Didactic Port-Hamiltonian identification of the repository's modified Duffing system.
+"""Port-Hamiltonian identification of the repository's modified Duffing system.
 
 Self-contained educational benchmark matching the repository's Duffing dynamics.
 Stage PH-1: canonical J, known G, learn a scalar Hamiltonian coefficient
@@ -21,6 +21,7 @@ torch.manual_seed(156)
 DT = 0.01
 
 
+# Known plant dynamics
 def true_dynamics(x, u):
     q, p = x.unbind(-1)
     return torch.stack((p, -2.0 * p - q * torch.cos(q + p) + u), dim=-1)
@@ -32,7 +33,7 @@ def true_dynamics(x, u):
 # R = diag(0, r(q,p)), with r >= 2 - |q|.
 # The bound guarantees R >= 0 on |q| <= 2.
 
-
+# Creted for normalization purposes
 def sinc_half(p):
     """sin(p/2)/(p/2), including the continuous value 1 at p=0."""
     return torch.sinc(p / (2.0 * torch.pi))
@@ -62,7 +63,6 @@ def reference_ph_dynamics(x, u):
 # a, r0, r1 >= 0 are imposed by softplus.
 # When |q| <= 1, the bracket is nonnegative, so R_theta >= 0.
 # The true parameters are a = r0 = r1 = 1.
-
 
 class ParametricPH(nn.Module):
     def __init__(self):

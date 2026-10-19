@@ -32,7 +32,7 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 
-from port_hamiltonian_duffing_intro import ParametricPH, true_dynamics, rk4_step, DT
+from port_hamiltonian_duffing import ParametricPH, true_dynamics, rk4_step, DT
 
 # 1) Experimental configuration (same reference as noisy SINDy).
 torch.set_default_dtype(torch.float64)
