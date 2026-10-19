@@ -5,8 +5,8 @@ Companion to port_hamiltonian_duffing.py and SINDy_with_disturbances.py.
 Same modified Duffing plant, input, RK4 step, process noise and measurement
 noise levels as the repository's noisy SINDy experiment:
 
-    q_dot = p
-    p_dot = -2*p - q*cos(q+p) + u + w
+    dq/dt = p
+    dp/dt = -2*p - q*cos(q+p) + u + w
     y = p + v
 
 PH-1 is deliberately STRUCTURED: we know the functional form of H and R but
@@ -21,7 +21,8 @@ head-to-head score.
 
 Process disturbance w is unmeasured, zero-mean, piecewise constant per RK4 step.
 Measurement noise is scaled by std(y_true), just as in SINDy_with_disturbances.
-We estimate y_dot from noisy measurements, not from the plant's true dynamics.
+We estimate dp/dt numerically from noisy samples y=p+v, not from an exact
+state derivative or a classical derivative of white measurement noise.
 Validation is on a clean holdout with DIFFERENT initial condition and input.
 The table also includes a 0%-sensor-noise diagnostic to separate measurement
 noise from process disturbance and smoothing bias.
@@ -74,7 +75,7 @@ def measurement_and_derivative(y, dt=DT, window=SAVGOL_WINDOW,
 
 
 def reconstruct_position(p_smooth, q0):
-    """Use q_dot=p and the KNOWN q0: trapezoidal quadrature of observed velocity."""
+    """Use dq/dt=p and the KNOWN q0: trapezoidal quadrature of observed velocity."""
     dq = 0.5 * DT * (p_smooth[1:] + p_smooth[:-1])
     return torch.cat((q0.reshape(1), q0 + torch.cumsum(dq, dim=0)))
 
@@ -82,7 +83,7 @@ def reconstruct_position(p_smooth, q0):
 def fit_ph(x_measured, u, p_dot_estimate, train_range):
     """Estimate a, r0, r1 from reconstructed states and measured acceleration.
 
-    With noisy data, Y = estimated(p_dot) - u and Phi uses estimated(q,p).
+    With noisy data, Y = estimated(dp/dt) - u and Phi uses estimated(q,p).
     """
     # Approximate input at the instants used by the smoothed derivative.
     u_at_samples = torch.cat((u[:1], 0.5 * (u[:-1] + u[1:]), u[-1:]))
@@ -145,7 +146,7 @@ def main():
 
     # 4) Interpretability is part of the experiment: print parameters and errors.
     print("\nDUFFING - PORT-HAMILTONIAN WITH DISTURBANCES")
-    print("True drift: q_dot=p, p_dot=-2p-q*cos(q+p)+u")
+    print("True drift: dq/dt=p, dp/dt=-2p-q*cos(q+p)+u")
     print("Sensor: y=p+v; process w ~ N(0, 0.5^2) each time step")
     print("True parameters: a=r0=r1=1; true q(0) provided to identifier")
     print("Measurements smoothed by local polynomial window=41, degree=3")
