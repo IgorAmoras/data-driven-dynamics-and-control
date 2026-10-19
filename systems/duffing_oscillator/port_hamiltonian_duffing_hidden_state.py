@@ -49,7 +49,7 @@ def identify_hidden_position(y, u):
             continue
 
         # The same PH regression as the other experiments:
-        # Y = p_dot - u = Phi(q,p) @ [a, r0, r1].
+        # Y = estimated(dp/dt) - u = Phi(q,p) @ [a, r0, r1].
         features = ph_features(torch.stack((q, p), dim=-1))
         target = p_dot - u_samples
         coefficients, loss = fit_nonnegative_lstsq(features[valid], target[valid])
