@@ -203,6 +203,12 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# Temporary editor and notebook artifacts
+*.tmp
+*.bak
+*.swp
+~$*
+
 # Ruff stuff:
 .ruff_cache/
 

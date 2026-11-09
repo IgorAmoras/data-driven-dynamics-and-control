@@ -1,7 +1,9 @@
+# Direct project dependencies. The resolved Windows/Python 3.12 environment is
+# recorded in requirements-lock.txt; update both when changing dependencies.
+numpy==1.26.4
+scipy==1.14.1
+matplotlib==3.9.4
 torch
-numpy
-matplotlib
 torchdiffeq
 cvxpy
 jupyter
-scipy
