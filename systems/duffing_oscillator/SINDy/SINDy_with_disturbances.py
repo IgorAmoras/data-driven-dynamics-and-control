@@ -1,6 +1,6 @@
 # Duffing Oscillator - SINDy with measurement and process disturbances
-# dot{x1} = x2
-# dot{x2} = -delta*x2 - x1*cos(x1 + x2) + u + w
+# dx1/dt = x2
+# dx2/dt = -delta*x2 - x1*cos(x1 + x2) + u + w
 # y = x2 + v
 
 import matplotlib.pyplot as plt

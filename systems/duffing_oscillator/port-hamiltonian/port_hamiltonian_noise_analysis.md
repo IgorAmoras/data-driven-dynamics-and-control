@@ -1,5 +1,29 @@
 # Duffing Port-Hamiltoniano — identificação com ruído
 
+## Convenção de derivadas (19/10/2026)
+
+É importante explicitar a variável de derivação. No benchmark, $q=x_1$ é posição, $p=x_2$ é velocidade e $x=[q,p]^T$. Portanto, $dq/dt$ e $dp/dt$ são derivadas **temporais**, enquanto $\partial H/\partial q$, $\partial H/\partial p$ são derivadas **parciais** da função energia em relação aos estados.
+
+\[
+\frac{\partial H_a(q,p)}{\partial q}=a\,q\cos(q),\qquad
+\frac{\partial H_a(q,p)}{\partial p}=p,
+\]
+
+\[
+\frac{dx}{dt}=[J-R(q,p)]\nabla_x H_a(q,p)+Gu,\qquad
+\frac{dq}{dt}=\frac{\partial H_a}{\partial p},\qquad
+\frac{dp}{dt}=-\frac{\partial H_a}{\partial q}
+-r(q,p)\frac{\partial H_a}{\partial p}+u+w.
+\]
+
+A variação total de energia ao longo da trajetória, no modelo com perturbação de processo, é
+\[
+\frac{dH_a(x(t))}{dt}=-r(q,p)p^2+pu+pw.
+\]
+Esta identidade não inclui a perturbação de medição $v$ porque ela afeta o sensor, não o campo de estado.
+
+Na identificação com $y_k=p(t_k)+v_k$, a regressão usa uma **estimativa numérica de $dp/dt$** a partir das amostras de $y$, e não a derivada exata da planta nem a derivada clássica do ruído. A condição $R\succeq0$ é garantida localmente em $|q|\leq1$ para os coeficientes não negativos; não implica, por si só, estabilidade assintótica global.
+
 ## Objetivo e referência
 
 Estudar a robustez do identificador PH-1 paramétrico do arquivo port_hamiltonian_duffing.py, reutilizando a convenção de SINDy_with_disturbances.py: ruído de medição de 1%, 3%, 5% e 10%, além de perturbação de processo com desvio-padrão 0,5. O teste adicional de 0% é apenas diagnóstico.
@@ -7,7 +31,7 @@ Estudar a robustez do identificador PH-1 paramétrico do arquivo port_hamiltonia
 A planta de referência é:
 
 \[
-\dot q=p,\qquad \dot p=-2p-q\cos(q+p)+u+w,\qquad y=p+v.
+\frac{dq}{dt}=p,\qquad \frac{dp}{dt}=-2p-q\cos(q+p)+u+w,\qquad y=p+v.
 \]
 
 O modelo PH mantém J canônico e G=[0,1]^T, aprendendo três coeficientes positivos (a, r0, r1) de:

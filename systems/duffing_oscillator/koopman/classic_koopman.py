@@ -1,6 +1,6 @@
 # Duffing Oscillator System (as in SiShiAta 2026)
-# dot{x1} = x2
-# dot{x2} = -delta*x2 - x1*cos(x1 + x2) + u
+# dx1/dt = x2
+# dx2/dt = -delta*x2 - x1*cos(x1 + x2) + u
 
 import torch
 import numpy as np
