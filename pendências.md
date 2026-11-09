@@ -1,0 +1,4 @@
+- Para reunião pós-09.11:
+    - Investigar artigos apresentados pelo professor.
+        - Artigos nas imagens do Whatsapp/Gmail.   
+    - Entrar na parte de aprendizado profundo 
