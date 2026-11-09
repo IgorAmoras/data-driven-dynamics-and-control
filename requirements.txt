@@ -4,3 +4,4 @@ matplotlib
 torchdiffeq
 cvxpy
 jupyter
+scipy
