@@ -107,3 +107,14 @@ Ele também precisa produzir matrizes de covariância semidefinidas positivas pa
 Em linhas gerais, o artigo diz que:
 
 ![Figura do artigo](image.png)
+
+---
+
+## Experimentos em Jupyter Notebook
+
+A partir deste registro de fundamentos, seguimos para duas investigações executáveis, mantendo a separação entre o **modelo usado para simular a planta** e os dados disponíveis ao **identificador**.
+
+1. [Problema 1 — Regressão escalar com GP](GP_Problema_1.ipynb): reprodução didática do Exemplo 4.3 da Seção 4.2.5 do [artigo-base](https://arxiv.org/html/2512.06315), comparando GP convencional e GP estruturado por uma média linear por partes. O arquivo [GP_Problema_1_inicio.ipynb](GP_Problema_1_inicio.ipynb) permanece como checkpoint inicial.
+2. [Duffing — Identificação discreta com GP](GP_Duffing.ipynb): extensão **nossa** ao benchmark modificado do repositório. Dois GPs escalares estimam diretamente \(x_{k+1}\) a partir de \((x_k,u_k)\), com análise de one-step, rollout livre, generalização e incerteza.
+
+**Norte do estudo:** predição de um passo não basta para validar um modelo útil para controle; precisamos observar o comportamento temporal e a extrapolação. Ainda não impomos propriedades de estabilidade nem retiramos a medição dos estados.
