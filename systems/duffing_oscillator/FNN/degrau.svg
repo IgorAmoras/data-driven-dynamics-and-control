@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 610 350" width="610" height="350" role="img" aria-labelledby="title desc">
+<title id="title">Função degrau</title><desc id="desc">σ(a) = 0, se a &lt; 0; 1, se a ≥ 0. Imagem: {0, 1}.</desc>
+<rect width="610" height="350" rx="12" fill="#ffffff"/>
+<g font-family="Arial, sans-serif" fill="#172033">
+<text x="305" y="26" font-size="19" font-weight="bold" text-anchor="middle">Função degrau</text>
+<path d="M60 50V270" stroke="#e1e7ef"/><text x="60" y="290" font-size="12" text-anchor="middle">-4</text>
+<path d="M122.5 50V270" stroke="#e1e7ef"/><text x="122.5" y="290" font-size="12" text-anchor="middle">-3</text>
+<path d="M185 50V270" stroke="#e1e7ef"/><text x="185" y="290" font-size="12" text-anchor="middle">-2</text>
+<path d="M247.5 50V270" stroke="#e1e7ef"/><text x="247.5" y="290" font-size="12" text-anchor="middle">-1</text>
+<path d="M310 50V270" stroke="#e1e7ef"/><text x="310" y="290" font-size="12" text-anchor="middle">0</text>
+<path d="M372.5 50V270" stroke="#e1e7ef"/><text x="372.5" y="290" font-size="12" text-anchor="middle">1</text>
+<path d="M435 50V270" stroke="#e1e7ef"/><text x="435" y="290" font-size="12" text-anchor="middle">2</text>
+<path d="M497.5 50V270" stroke="#e1e7ef"/><text x="497.5" y="290" font-size="12" text-anchor="middle">3</text>
+<path d="M560 50V270" stroke="#e1e7ef"/><text x="560" y="290" font-size="12" text-anchor="middle">4</text>
+<path d="M60 233.33333333333334H560" stroke="#e1e7ef"/><text x="47" y="237.33333333333334" font-size="12" text-anchor="end">0</text>
+<path d="M60 160H560" stroke="#e1e7ef"/><text x="47" y="164" font-size="12" text-anchor="end">0.5</text>
+<path d="M60 86.66666666666666H560" stroke="#e1e7ef"/><text x="47" y="90.66666666666666" font-size="12" text-anchor="end">1</text>
+<path d="M60 233.33333333333334H560 M310 50V270" stroke="#8793a5" fill="none" stroke-width="1.2"/>
+<rect x="60" y="50" width="500" height="220" fill="none" stroke="#cbd5e1"/>
+<text x="574" y="225.33333333333334" font-size="14">a</text><text x="20" y="43" font-size="14">σ(a)</text>
+<path d="M60 233.33333333333334 H310 M310 86.66666666666666 H560" fill="none" stroke="#2563eb" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="310" cy="233.33333333333334" r="4.5" fill="white" stroke="#2563eb" stroke-width="2.5"/><circle cx="310" cy="86.66666666666666" r="4.5" fill="#2563eb"/>
+<text x="305" y="316" font-size="15" text-anchor="middle">σ(a) = 0, se a &lt; 0; 1, se a ≥ 0</text><text x="305" y="337" font-size="13" fill="#526176" text-anchor="middle">Imagem: {0, 1}</text>
+</g></svg>
